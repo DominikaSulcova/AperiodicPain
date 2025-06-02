@@ -1,0 +1,858 @@
+---
+title: 'Momentary excitability of human PFC estimated by EEG aperiodic component predicts pain intensity and the size of pain-evoked brain response'
+subtitle: 'Statistics and visualization'
+author: 'Dominika Sulcova'
+institute: 'MSH - Medical School Hamburg'
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+```{r libraries, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(ggplot2)
+library(cowplot)
+library(ggpubr)
+library(ggforce)
+library(reshape2)
+#library(eegUtils)
+library(gridExtra)
+library(knitr)
+library(rmarkdown)
+library(rlang)
+library(svglite)
+library(car)
+```
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 50),tidy = TRUE)
+```
+
+```{r,message=FALSE,warning=FALSE}
+# set up the working directory
+wd_path <- choose.dir(default = getwd(), caption = "Select a Folder")
+if (nzchar(wd_path)) {
+  setwd(wd_path)
+  message("Working directory set to: ", wd_path)
+} else {
+  message("No folder selected. Working directory remains: ", getwd())
+}
+
+# functions
+summarize_and_plot <- function(data, variable, ..., group_vars = NULL) {
+  # convert variables to symbols
+  variable <- sym(variable)
+  variable_name <- quo_name(variable)
+  if (!is.null(group_vars)) {
+    group_vars <- syms(group_vars)
+  }
+  
+  # determine variable
+  if (grepl("amplitude", variable_name, ignore.case = TRUE)) {
+    y_label <- "amplitude (µV)"
+  } else if (grepl("latency", variable_name, ignore.case = TRUE)) {
+    y_label <- "latency (s)"
+  } else if (grepl("pain", variable_name, ignore.case = TRUE)) {
+    y_label <- "intensity (% VAS)"
+  } else if (grepl("slope", variable_name, ignore.case = TRUE)) {
+    y_label <- "slope"
+  } else {
+    y_label <- "value"
+  }
+  
+  custom_theme <- theme(
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.9)
+  )
+  
+  # calculate summary statistics
+  if (length(group_vars) == 0) {
+    summary_stats <- data %>%
+      summarise(
+        mean = mean(!!variable, na.rm = TRUE),
+        sd = sd(!!variable, na.rm = TRUE),
+        sem = sd / sqrt(n())
+      )
+  } else {
+    summary_stats <- data %>%
+      group_by(!!!group_vars) %>%
+      summarise(
+        mean = mean(!!variable, na.rm = TRUE),
+        sd = sd(!!variable, na.rm = TRUE),
+        sem = sd / sqrt(n())
+      ) %>%
+      ungroup()
+  }
+  
+  # print summary statistics
+  print(summary_stats)
+  
+  # plot 1: distribution of all values
+  dist_plot <- ggplot(data, aes(x = !!variable)) +
+    geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+    labs(title = paste(variable_name, ": distribution of values"), x = y_label, y = "frequency") + 
+    custom_theme
+  
+  # plot 2: boxplot with single-subject averages
+  subject_averages <- data %>%
+    group_by(subject) %>%
+    summarise(
+      subject_mean = mean(!!variable, na.rm = TRUE),
+      subject_sd = sd(!!variable, na.rm = TRUE)) %>%
+    ungroup()
+  
+  grand_mean <- mean(subject_averages$subject_mean, na.rm = TRUE)
+  grand_sd <- sd(subject_averages$subject_mean, na.rm = TRUE)
+  
+  dot_plot <- ggplot(subject_averages, aes(x = factor(subject), y = subject_mean)) +
+    geom_point(color = "blue", size = 3) +
+    geom_errorbar(aes(ymin = subject_mean - subject_sd, ymax = subject_mean + subject_sd), width = 0.3) +
+    geom_hline(yintercept = grand_mean, linetype = "dashed", color = "red", width = 1.2) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = grand_mean - grand_sd, ymax = grand_mean + grand_sd, 
+             alpha = 0.2, fill = "red") +
+    labs(title = paste(variable_name, ": average values per subject"), x = 'Subject', y = y_label) +
+    custom_theme
+  
+  # additional plots if grouping variables are provided
+  if (!is.null(group_vars)) {
+    # distribution plot for each group
+    dist_plot_group <- ggplot(data, aes(x = !!variable, fill = factor(!!!group_vars))) +
+      geom_histogram(position = "identity", bins = 30, alpha = 0.4) +
+      labs(title = "Distribution of values by group", x = y_label, y = "frequency") +
+      theme(legend.title = element_blank()) +
+      custom_theme
+    
+    # boxplot for each group with subject markers
+    boxplot_group <- ggplot(data, aes(x = interaction(!!!group_vars), y = !!variable)) +
+      geom_jitter(aes(color = factor(subject)), width = 0.2, height = 0, alpha = 0.6) +
+      geom_boxplot(outlier.shape = NA, alpha = 0.2, fill = NA) +
+      stat_summary(fun = mean, geom = "point", shape = 4, size = 3, color = "red") +
+      labs(title = paste(variable_name, ": mean group values"), x = paste(group_vars, collapse = " "), y = y_label) +
+      theme(legend.position = "none") +
+      custom_theme
+    if (grepl("latency", variable_name, ignore.case = TRUE)) {
+      boxplot_group <- boxplot_group + coord_flip()
+      }
+    
+    return(list(summary_stats = summary_stats, dist_plot = dist_plot, dot_plot = dot_plot,
+            dist_plot_group = dist_plot_group, boxplot_group = boxplot_group))
+    }
+  
+  # display the plots
+  print(dist_plot)
+  print(dot_plot)
+  if (!is.null(group_vars)) {
+    print(dist_plot_group)
+    print(boxplot_group)
+  }
+  
+  # return summary statistics and plot handles
+  return(list(summary_stats = summary_stats, dist_plot = dist_plot, dot_plot = dot_plot))
+}
+check_model <- function(lmm, data){
+  # visualize residuals
+  plot(fitted(lmm),residuals(lmm))
+  qqnorm(residuals(lmm))
+  qqline(residuals(lmm))
+  ggplot(data.frame(cook=cooks.distance(lmm),id=data$subject),
+         aes(x=cook,y=id)) +
+    geom_point() +
+    theme_bw()
+  
+  # identify outliers using the 1.5 * IQR rule
+  residuals <- resid(lmm)
+  residuals_df <- data.frame(residuals = residuals)
+  IQR_res <- IQR(residuals_df$residuals)
+  Q1 <- quantile(residuals_df$residuals, 0.25)
+  Q3 <- quantile(residuals_df$residuals, 0.75)
+  lower_bound <- Q1 - 1.5 * IQR_res
+  upper_bound <- Q3 + 1.5 * IQR_res
+  outliers <- residuals_df %>%
+  filter(residuals < lower_bound | residuals > upper_bound)
+  
+  # return outliers
+  return(outliers)
+}  
+```
+
+This script provides the basis for statistical analysis and visualization of data collected in 2024 in **Laserlab at MSH Medical School Hamburg**. The aim was to obtain a comprehensive dataset of normative LEPs from young healthy population and to use this data to test several hypotheses. **LEPs** were recorded wih 64-channel Brain Vision system (original SR 5kHz, online ref FCz) following stimulation with Yap laser with fixed parameters (1.75J, 5mm, 3ms). Each subject was stimulated on **two body areas**, either on both hands, both feet, or on a hand and a foot on the same side. Stimuli were delivered in blocks of 30 in ABBA format, resulting in block 1 and 2 for each area. In addition, each subject underwent psychological evaluation using questionnaires (BDI, PCS), evaluation of sensory system using shortened version of QST, and recording of **SEPs** using electrical stimulation of either median or tibial nerve (300 stimuli delivered to the same areas and in the same order). **Resting-state EEG** was obtained in 1.5 min blocks with eyes open and closed before the LEP recording and after the first two blocks of laser stimulation. 
+
+Here, the collected data is used to investigate, whether the momentary excitability of the prefrontal cortex (PFC) can predict the character of brain response to painful stimulation and the subjective pain intensity. PFC excitability was estimated from 1s segments of EEG recording preceding the laser stimulus obtained at the frontal electrodes. More specifically, the spectra of single-trial signals were separated into the oscillatory and aperiodic component and the **slope of the aperiodic component (`r if (knitr::is_html_output()) '&beta;' else '$\\beta$'`)** was cosidered as an approximation of the ratio of excitatory and inhibitory neurotransmission. The **amplitude and latency of LEP components N1, N2 and P2** were also obtained at single-trial level, and the **intensity of perceived pain** was encoded as a rating provided by the subject after each stimulus using a VAS (0-100). The association between the predictor variable (`r if (knitr::is_html_output()) '&beta;' else '$\\beta$'` parameter) and each outcome variable was tested using LMMs.     
+
+## DATA IMPORT
+```{r,message=FALSE,warning=FALSE}
+# read .csv files
+data_all <- read_csv(file.path(wd_path, paste0('AperiodicPFC_export_sources_all.csv')))
+data2exclude <- read_csv2(file.path(wd_path, 'AperiodicPFC_data2exclude.csv'))
+data2exclude <- data2exclude %>%
+  filter(!is.na(subject))
+source_labels <- read_csv(file.path(wd_path, 'AperiodicPFC_source_labels.csv'))
+
+# explore the structure of data and summarize 
+str(data_all)
+summary(data_all)
+
+# clean and prepare complete dataset
+data_all <- data_all %>%
+  mutate(across(where(~!is.numeric(.)), as.factor)) %>% 
+  filter(latency > 0) 
+data_all <- data_all %>%
+  group_by(subject) %>%
+  mutate(
+    rating_norm = (rating / max(rating, na.rm = TRUE)) * 100
+  ) %>%
+  ungroup()
+exclude <- list()
+for(i in 1:nrow(data2exclude)) {
+  # extract the current exclusion criteria
+  exclude$subj <- data2exclude$subject[i]
+  exclude$area <- data2exclude$area[i]
+  exclude$side <- data2exclude$side[i]
+  exclude$comp <- data2exclude$component[i]
+  
+  if(exclude$comp == "all") {
+    # exclude all components for this subject/area/side
+    data_all <- data_all %>%
+      filter(!(subject == exclude$subj & area == exclude$area & side == exclude$side))
+  } else {
+    # exclude specific component
+    data_all <- data_all %>%
+      filter(!(subject == exclude$subj & area == exclude$area & side == exclude$side & component == exclude$comp))
+  }
+}
+rm(exclude, i)
+```
+
+## DESCRIPTIVE STATISTICS
+# subjects
+```{r}
+data_subjects <- data_all %>%
+  # group_by(subject, area, component) %>%
+  group_by(subject) %>%
+  summarize(
+    age = first(age),  
+    male = first(male),
+    handedness = first(handedness)
+  )
+
+# data_subj <- data_subjects %>%
+#   filter(area == 'foot') %>% 
+#   filter(component == 'N2')
+
+summary_stats <- data_subjects %>%
+  summarize(
+    mean_age = mean(age, na.rm = TRUE),
+    sd_age = sd(age, na.rm = TRUE),
+    num_males = sum(male == 1, na.rm = TRUE),
+    num_righthanded = sum(handedness == 'right', na.rm = TRUE)
+  )
+print(summary_stats)
+rm(data_subjects, data_subj)
+```
+
+# LEPs
+```{r}
+# define variables
+components <- c('N1', 'N2', 'P2')
+areas <- c('hand', 'foot')
+variables <- c('amplitude', 'latency')
+
+# prepare outcome df
+outcome_LEPs <- data.frame(component = character(),
+                         area = character(),
+                         variable = character(),
+                         mean = numeric(),
+                         sd = numeric(),
+                         sem = numeric(),
+                         stringsAsFactors = FALSE)
+
+# loop through components, areas, and variables 
+for (comp in components) {
+  for (ar in areas) {
+    for (var in variables) {
+      # filter the data for the current component and area
+      data_LEPs <- data_all %>% 
+        filter(component == !!comp) %>% 
+        filter(area == !!ar) 
+      
+      # summarize and plot
+      output <- summarize_and_plot(data_LEPs, var)
+      
+      # append the results to the outcome variable
+      outcome_LEPs <- outcome_LEPs %>%
+        add_row(component = comp,
+                area = ar,
+                variable = var,
+                mean = output$summary_stats$mean,
+                sd = output$summary_stats$sd,
+                sem = output$summary_stats$sem)
+    
+      # save the plots as SVG files
+      save_plot(paste0(wd_path, '\\figures\\', comp, "_", ar, "_", var, "_distribution.svg"), output$dist_plot)
+      save_plot(paste0(wd_path, '\\figures\\', comp, "_", ar, "_", var, "_subjects.svg"), output$dot_plot)
+    }
+  }
+}
+print(outcome_LEPs)
+
+# loop through areas and variables, group by components
+for (ar in areas) {
+  for (var in variables) {
+      # filter the data for the current peak
+      data_LEPs <- data_all %>% 
+        filter(area == !!ar) 
+      
+      # summarize and plot
+      output <- summarize_and_plot(data_LEPs, var, group_vars = 'component')
+      
+      # display distribution
+      print(output$dist_plot_group)
+      save_plot(paste0(wd_path, '\\figures\\LEP_', ar, '_', var, "_distribution_all.svg"), output$dist_plot_group)
+      
+      # display boxplot
+      print(output$boxplot_group)
+      save_plot(paste0(wd_path, '\\figures\\LEP_', ar, '_', var, "_boxplot_all.svg"), output$boxplot_group)
+  }
+}
+rm(components, areas, variables, comp, ar, var, data_LEPs, output)
+```
+
+# pain ratings
+```{r}
+# define variables
+areas <- c('hand', 'foot')
+variables <- c('rating', 'rating_norm')
+
+# prepare outcome df
+outcome_ratings <- data.frame(area = character(),
+                              variable = character(),
+                              mean = numeric(),
+                              sd = numeric(),
+                              sem = numeric(),
+                              stringsAsFactors = FALSE)
+
+# loop through areas
+for (ar in areas) {
+  for (var in variables) {
+    # filter the data for the current area
+    data_ratings <- data_all %>% 
+      filter(area == !!ar) 
+  
+    #  summarize and plot
+    output <- summarize_and_plot(data_ratings, var)
+    save_plot(paste0(wd_path, '\\figures\\', var, '_', ar, '_distribution.svg'), output$dist_plot)
+    save_plot(paste0(wd_path, '\\figures\\', var, '_', ar, '_subjects.svg'), output$dot_plot)
+    
+    # append the results to the outcome variable
+    outcome_ratings <- outcome_ratings %>%
+      add_row(area = ar,
+              variable = var,
+              mean = output$summary_stats$mean,
+              sd = output$summary_stats$sd,
+              sem = output$summary_stats$sem)
+  }
+}
+
+# loop through variables, group by areas
+for (var in variables) {
+    # summarize and plot
+    output <- summarize_and_plot(data_all, var, group_vars = 'area')
+    
+    # display distribution
+    print(output$dist_plot_group)
+    save_plot(paste0(wd_path, '\\figures\\', var, '_distribution_all.svg'), output$dist_plot_group)
+    
+    # display boxplot
+    print(output$boxplot_group)
+    save_plot(paste0(wd_path, '\\figures\\', var, "_boxplot_all.svg"), output$boxplot_group)
+}
+rm(areas, variables, ar, var, data_ratings, output)
+```
+
+# aperiodic measures
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_APC <- data.frame(region_n = numeric(),
+                          region_label = character(),
+                          mean = numeric(), 
+                          sd = numeric(),
+                          sem = numeric(),
+                          stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # filter the data for the current area and brain region
+    var <- paste0('exponent', as.character(reg))
+    data_APC <- data_all %>% 
+      filter(component == !!'N2') %>%
+      select(c('subject', 'trial', 'area', var)) 
+      
+      # summarize and plot
+      output <- summarize_and_plot(data_APC, var)
+      
+      # append the results to the outcome variable
+      outcome_APC <- outcome_APC %>%
+        add_row(region_n = reg,
+                region_label = source_labels$label[reg], 
+                mean = output$summary_stats$mean,
+                sd = output$summary_stats$sd,
+                sem = output$summary_stats$sem)
+    
+      # save the plots as SVG files
+      # save_plot(paste0(wd_path, '\\figures\\APC-source_', ar, '_', var, "_", reg, "_distribution.svg"), output$dist_plot)
+      # save_plot(paste0(wd_path, '\\figures\\APC-source_', ar, '_', var, "_", reg, "_subjects.svg"), output$dot_plot)
+}
+print(outcome_APC)
+
+# plot mean values
+outcome_APC_ordered <- outcome_APC %>%
+  arrange(desc(mean)) %>%
+  mutate(region_label = factor(region_label, levels = region_label))
+barplot <- ggplot(outcome_APC_ordered, aes(x = region_label, y = mean)) +
+  geom_col(fill = "steelblue") +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.3) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_blank()
+  ) +
+  ylab("Mean exponent value") 
+plot(barplot)
+rm(regions, reg, var, data_APC, output)
+```
+
+## STATISTICAL ANALYSIS
+# N1 amplitude
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_N1_amplitude <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "N1") %>% 
+      select(c('subject', 'component', 'area', 'trial', var, 'amplitude')) %>% 
+      rename(exponent = var)
+    
+    # apply log-transformation to the outcome variable
+    min_value <- min(data$amplitude, na.rm = TRUE)
+    data <- data %>%
+      mutate(amplitude_shifted = amplitude - min_value + 1,
+        amplitude_log = log(amplitude_shifted))
+    
+    # evaluate the model
+    model <- lmer(amplitude_log ~ exponent + area + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_N1_amplitude <- outcome_N1_amplitude %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# N1 latency
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_N1_latency <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "N1") %>% 
+      select(c('subject', 'component', 'area', 'trial', var, 'latency')) %>% 
+      rename(exponent = var)
+    
+    # evaluate the model
+    model <- lmer(latency ~ exponent + area + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_N1_latency <- outcome_N1_latency %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# N2 amplitude
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_N2_amplitude <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "N2") %>% 
+      select(c('subject', 'component', 'area', 'trial', var, 'amplitude')) %>% 
+      rename(exponent = var)
+    
+    # apply log-transformation to the outcome variable
+    min_value <- min(data$amplitude, na.rm = TRUE)
+    data <- data %>%
+      mutate(amplitude_shifted = amplitude - min_value + 1,
+        amplitude_log = log(amplitude_shifted))
+    
+    # evaluate the model
+    model <- lmer(amplitude_log ~ exponent + area + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_N2_amplitude <- outcome_N2_amplitude %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# N2 latency
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_N2_latency <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "N2") %>% 
+      select(c('subject', 'component', 'area', 'trial', var, 'latency')) %>% 
+      rename(exponent = var)
+    
+    # evaluate the model
+    model <- lmer(latency ~ exponent + area + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_N2_latency <- outcome_N2_latency %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# P2 amplitude
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_P2_amplitude <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "P2") %>% 
+      select(c('subject', 'component', 'area', 'trial', var, 'amplitude')) %>% 
+      rename(exponent = var)
+    
+    # apply log-transformation to the outcome variable
+    min_value <- min(data$amplitude, na.rm = TRUE)
+    data <- data %>%
+      mutate(amplitude_shifted = amplitude - min_value + 1,
+        amplitude_log = log(amplitude_shifted))
+    
+    # evaluate the model
+    model <- lmer(amplitude_log ~ exponent + area + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_P2_amplitude <- outcome_P2_amplitude %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# P2 latency
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_P2_latency <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "P2") %>% 
+      select(c('subject', 'component', 'area', 'trial', var, 'latency')) %>% 
+      rename(exponent = var)
+    
+    # evaluate the model
+    model <- lmer(latency ~ exponent + area + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_P2_latency <- outcome_P2_latency %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# pain rating
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_rating <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "N2") %>% 
+      select(c('subject', 'component', 'area', 'trial', var, 'rating', 'rating_norm')) %>% 
+      rename(exponent = var)
+    
+    # evaluate the model
+    model <- lmer(rating ~ exponent + area + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_rating <- outcome_rating %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# pain rating - only hand
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_rating_hand <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "N2") %>% 
+      filter(area == "hand") %>% 
+      select(c('subject', 'component', 'trial', var, 'rating', 'rating_norm')) %>% 
+      rename(exponent = var)
+    
+    # evaluate the model
+    model <- lmer(rating ~ exponent + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_rating_hand <- outcome_rating_hand %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# pain rating - only foot
+```{r}
+# define variables
+regions <- 1:95
+
+# prepare outcome df
+outcome_rating_foot <- data.frame(region_n = numeric(),
+                         region_label = character(),
+                         F_value = numeric(), 
+                         p_value = numeric(),
+                         significant = character(),
+                         stringsAsFactors = FALSE)
+
+# loop through regions
+  for (reg in regions) {
+    # subset the dataset
+    var <- paste0('exponent', as.character(reg))
+    data <- data_all %>%
+      filter(component == "N2") %>% 
+      filter(area == "foot") %>% 
+      select(c('subject', 'component', 'trial', var, 'rating', 'rating_norm')) %>% 
+      rename(exponent = var)
+    
+    # evaluate the model
+    model <- lmer(rating ~ exponent + (1 | subject), data = data)
+    results <- anova(model)
+    
+    # append to the outcome
+   if(results["exponent", "Pr(>F)"] < 0.05) {
+      signif <- '*'
+    } else {
+      signif <- ''
+    }
+    outcome_rating_foot <- outcome_rating_foot %>%
+      add_row(region_n = reg,
+              region_label = source_labels$label[reg], 
+              F_value = results["exponent", "F value"],
+              p_value = results["exponent", "Pr(>F)"],
+              significant = signif)
+  }
+```
+
+# export for visualization in MATLAB
+```{r}
+# N1 amplitude
+outcome <- outcome_N1_amplitude %>% 
+  filter(significant == '*')
+write.csv(outcome, "signifsources_N1_amplitude.csv", row.names = FALSE)
+
+# N1 latency
+outcome <- outcome_N1_latency %>% 
+  filter(significant == '*')
+write.csv(outcome, "signifsources_N1_latency.csv", row.names = FALSE)
+
+# N2 amplitude
+outcome <- outcome_N2_amplitude %>% 
+  filter(significant == '*')
+write.csv(outcome, "signifsources_N2_amplitude.csv", row.names = FALSE)
+
+# N2 latency
+outcome <- outcome_N2_latency %>% 
+  filter(significant == '*')
+write.csv(outcome, "signifsources_N2_latency.csv", row.names = FALSE)
+
+
+# P2 amplitude
+outcome <- outcome_P2_amplitude %>% 
+  filter(significant == '*')
+write.csv(outcome, "signifsources_P2_amplitude.csv", row.names = FALSE)
+
+# P2 latency
+outcome <- outcome_P2_latency %>% 
+  filter(significant == '*')
+write.csv(outcome, "signifsources_P2_latency.csv", row.names = FALSE)
+
+# ratings
+outcome <- outcome_rating %>% 
+  filter(significant == '*')
+write.csv(outcome, "signifsources_rating.csv", row.names = FALSE)
+```
