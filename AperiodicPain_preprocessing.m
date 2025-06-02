@@ -1,9 +1,9 @@
-%% NLEP - individual data pre-processing
+%% AperiodicPain - individual data pre-processing
 % author:   Dominika Sulcova, MSH Hamburg
-% created:  2024   
+% created:  2025   
 % 
 % This script runs the EEG pre-processing pipeline for a single subject 
-% taking part in the Normative LEP study (NLEP).
+% taking part in the AperiodicPain (AP) study.
 % 
 % Data: 
 %   1) resting state EEG (RS) 
@@ -11,18 +11,21 @@
 %           --> recorded only from S007 (38 subjects in total)
 %   2) laser-evoked potentials (LEP)
 %           --> fixed Yap-laser parameters: 3ms, 5mm, 1,75J  
-%           --> two areas: hand or foot, left or right
-%           --> repeated twice in ABBA format
+%           --> left and right hand stimulated, repeated in ABBA format
+%           --> in total 4 EEG blocks of 30 stimuli
 %   3) somatosensory-evoked potentials (SEP)
-%           --> median nerve OR tibial nerve
+%           --> median nerve stimulation
 %           --> 0.5ms, intensity above motor threshold (visible thumb twitch)
 %           --> same structure as LEPs
+%   4) visual-evoked potentials (VEP)
+%           --> pattern-onset VEPs - 1° checkerboard stimuli, 200ms flash
+%           --> 2 blocks of 30 stimuli
 % 
 % Preprocessing:
-%   1) fill in metadata structure
+%   1) fill in metadata 
 %           --> allows user to manually encode information about 
 %               the subject, session, stimulation
-%           --> creates a new entry in a structure 'NLEP_info' and saves
+%           --> creates a new entry in a structure 'AP_info' and saves
 %   2) import data for letswave
 %           --> searches in the input directory to identify all datasets
 %           --> imports to MATLAB variable 'dataset'
@@ -100,17 +103,20 @@
 %   16) ERP group-average visualization
 % 
 % Output:
-%   1) NLEP_info    --> structure containing all information about
+%   1) AP_info      --> structure containing all information about
 %                       the subject, experimental session, data pre-processing 
 %                       including individual processing parameters...
 %                   --> one row per subject
-%   2) NLEP_data    --> structure containing final processed data  
-%                       (split in two due to file size)
-%                   --> LEP data, PSD from RS-EEG
+%   2) AP_data      --> structure containing final processed data  
+%                   --> single-trial evoked potentials
+%                   --> single-trial PSD of pre-stimulus EEG
+%                   --> single-trial PSD of source activities
 %                   --> one row per subject
-%   3) NLEP_measures    	--> structure containing extracted LEP and
-%                               RS-EEG measures
-%                           --> one row per subject  
+%   3) AP_measures  --> structure containing extracted measures
+%                   --> amplitudes and latencies of late LEP/SEP/VEP components (single-trial)
+%                   --> single-trial estimates of pre-stimulus aperiodic exponent
+%                   --> pain intensity ratings
+%                   --> one row per subject  
 % 
 %% parameters
 clear all; clc
@@ -123,110 +129,101 @@ folder.output = uigetdir(pwd, 'Choose the OneDrive folder');        % output fol
 cd(folder.data)
 
 % output
-study = 'NLEP';
+study = 'AP';
 output_file = sprintf('%s\\%s_output.mat', folder.output, study);
 
-% sound
-load handel.mat
-haleluja = y; clear y Fs
-
 %% 1) fill in metadata structure
+% ----- section input -----
+params.laser.intensity = 1.75;
+params.laser.pulse = 3;
+params.laser.diameter = 5;
+params.electrical.duration = 200;
+params.electrical.target = 'median nerve';
+params.visual.stimulus = 'checkerboard 1°';
+params.visual.duration = 200;
+% -------------------------
+
+% load the info structure
+if exist(output_file) == 2
+    output_vars = who('-file', sprintf('%s', output_file));
+    if ismember('AP_info', output_vars)
+        load(output_file, 'AP_info')
+    else
+        AP_info = struct;
+        save(output_file, 'AP_info','-append')
+    end
+else
+    AP_info = struct;
+    save(output_file, 'AP_info')
+end
 
 % get subject & session info
-prompt = {'date:', 'subject:', 'age:', 'male:' 'condition_1:', 'condition_2:',...
-    'temperature before - hand right:', 'temperature before - hand left:', 'temperature before - foot right:', 'temperature before - foot left:', ...
-    'ES intensity - condition 1:', 'ES intensity - condition 2:'};
-dlgtitle = 'Subject  session information';
-dims = [1 35];
-definput = {date, 'S000', '18', '1', 'hand_right', 'foot_left', ...
-    '37.0', '37.0', '37.0', '37.0', '37.0', '37.0', '37.0', '37.0', ...
-    '10.0', '10.0'};
+prompt = {'date:', 'subject:', 'age (years):', 'male:', 'handedness score:', ...
+    'height (cm):', 'weight (kg):', 'right arm (cm):', 'left arm (cm)', ...
+    'starting modality:', 'starting side:', ...
+    'ES intensity (mA) - right:', 'ES intensity (mA) - left:'};
+dlgtitle = 'Subject & session';
+dims = [1 50];
+definput = {date, 'S200', '18', '1', '50', ...
+    '170', '70', '60', '60', ...
+    'laser/electrical', 'right/left', ...
+    '8.0', '8.0'};
 session_info = inputdlg(prompt,dlgtitle,dims,definput);
 clear prompt dlgtitle dims definput
 
 % identify subject's index
 subject_idx = str2num(session_info{2}(end-1:end));
 
-% load the info structure
-load(output_file, 'NLEP_info');
-
 % fill in the metadata structure
-NLEP_info.single_subject(subject_idx).date = session_info{1};
-NLEP_info.single_subject(subject_idx).ID = session_info{2};
-NLEP_info.single_subject(subject_idx).age = str2num(session_info{3});
-NLEP_info.single_subject(subject_idx).male = str2num(session_info{4});
-NLEP_info.single_subject(subject_idx).condition{1} = session_info{5};
-NLEP_info.single_subject(subject_idx).condition{2} = session_info{6};
-NLEP_info.single_subject(subject_idx).temperature.before.hand_right = str2num(session_info{7});
-NLEP_info.single_subject(subject_idx).temperature.before.hand_left = str2num(session_info{8});
-NLEP_info.single_subject(subject_idx).temperature.before.foot_right = str2num(session_info{9});
-NLEP_info.single_subject(subject_idx).temperature.before.foot_left = str2num(session_info{10});
-NLEP_info.single_subject(subject_idx).ES.condition1 = str2num(session_info{11});
-NLEP_info.single_subject(subject_idx).ES.condition2 = str2num(session_info{12});
+AP_info(subject_idx).date = session_info{1};
+AP_info(subject_idx).ID = session_info{2};
+AP_info(subject_idx).age = str2num(session_info{3});
+AP_info(subject_idx).male = str2num(session_info{4});
+AP_info(subject_idx).handedness = str2num(session_info{5});
+AP_info(subject_idx).body.height = str2num(session_info{6});
+AP_info(subject_idx).body.weight = str2num(session_info{7});
+AP_info(subject_idx).body.arm_right = str2num(session_info{8});
+AP_info(subject_idx).body.arm_left = str2num(session_info{9});
+AP_info(subject_idx).session.site = 'hand';
+AP_info(subject_idx).session.starting_modality = session_info{10};
+AP_info(subject_idx).session.starting_side = session_info{11};
+AP_info(subject_idx).stimulation.laser.intensity = params.laser.intensity;
+AP_info(subject_idx).stimulation.laser.pulse = params.laser.pulse;
+AP_info(subject_idx).stimulation.laser.diameter = params.laser.diameter;
+AP_info(subject_idx).stimulation.electrical.intensity.right = str2num(session_info{12});
+AP_info(subject_idx).stimulation.electrical.intensity.left = str2num(session_info{13});
+AP_info(subject_idx).stimulation.electrical.duration = params.electrical.duration;
+AP_info(subject_idx).stimulation.electrical.target = params.electrical.target;
+AP_info(subject_idx).stimulation.visual.stimulus = params.visual.stimulus;
+AP_info(subject_idx).stimulation.visual.duration = params.visual.duration;
 clear session_info
 
 % get pre-LEP temperature
-prompt = {sprintf('%s, block 1:', replace(NLEP_info.single_subject(subject_idx).condition{1}, '_', ' ')),...
-    sprintf('%s, block 1:', replace(NLEP_info.single_subject(subject_idx).condition{2}, '_', ' ')),...
-    sprintf('%s, block 2:', replace(NLEP_info.single_subject(subject_idx).condition{2}, '_', ' ')),...,
-    sprintf('%s, block 2:', replace(NLEP_info.single_subject(subject_idx).condition{1}, '_', ' '))};
+prompt = {'right hand, block 1:','right hand, block 2:', 'left hand, block 1:','left hand, block 2:'};
 dlgtitle = 'Pre-LEP temperature';
 dims = [1 35];
-definput = {'36.5', '36.5', '36.5', '36.5'};
+definput = {'35.5', '35.5', '35.5', '35.5'};
 session_info = inputdlg(prompt,dlgtitle,dims,definput);
 clear prompt dlgtitle dims definput
 
 % fill in the metadata structure
-seq = [1 2 2 1; 1 1 2 2];
-for a = 1:length(session_info)
-    statement = sprintf('NLEP_info.single_subject(subject_idx).temperature.LEP.%s_b%d = str2num(session_info{a});', NLEP_info.single_subject(subject_idx).condition{seq(1, a)}, seq(2, a));
-    eval(statement)
-end
-clear session_info seq a statement
-
-% get bodily measures
-for c = 1:length(NLEP_info.single_subject(subject_idx).condition)
-    if strcmp(NLEP_info.single_subject(subject_idx).condition{c}([1:4]), 'hand')
-        limb{c} = 'arm';
-    else
-        limb{c} = 'leg';
-    end
-end
-for c = 1:length(NLEP_info.single_subject(subject_idx).condition)
-    if strcmp(NLEP_info.single_subject(subject_idx).condition{c}([6:9]), 'left')
-        side{c} = 'left';
-    else
-        side{c} = 'right';
-    end
-end
-prompt = {'weight (kg):', 'height (cm):',...
-    sprintf('lenght of %s %s (cm):', side{1}, limb{1}),...
-    sprintf('lenght of %s %s (cm):', side{2}, limb{2})};
-dlgtitle = 'Bodily measures';
-dims = [1 35];
-definput = {'70.0', '175', '100.0', '100.0'};
-session_info = inputdlg(prompt,dlgtitle,dims,definput);
-clear c prompt dlgtitle dims definput
-
-% fill in the metadata structure
-NLEP_info.single_subject(subject_idx).body.weight = str2num(session_info{1});
-NLEP_info.single_subject(subject_idx).body.height = str2num(session_info{2});
-for c = 1:2
-    statement = sprintf('NLEP_info.single_subject(subject_idx).body.%s_%s = str2num(session_info{2 + c});', limb{c}, side{c});
-    eval(statement)
-end
-clear session_info c limb side statement
+AP_info(subject_idx).temperature.right_block1 = session_info{1};
+AP_info(subject_idx).temperature.right_block2 = session_info{2};
+AP_info(subject_idx).temperature.left_block1 = session_info{1};
+AP_info(subject_idx).temperature.left_block2 = session_info{2};
+clear session_info 
 
 % save to the output file
-save(output_file, 'NLEP_info', '-append');
+save(output_file, 'AP_info', '-append');
 
-%% 2) import data for letswave
+%% 2) import EEG data for letswave
 % ----- section input -----
-eyes = {'open', 'closed'};
-time = {'pre' 'post'};
+params.data = {'RS', 'LEP', 'SEP', 'VEP'};
+params.folder = 'EEG';
+params.data_n = [4, 4, 4, 2];
 % -------------------------
 
-% ask for subject number
+% ask for subject_idx if necessary
 if ~exist('subject_idx')
     prompt = {'subject number:'};
     dlgtitle = 'subject';
@@ -238,158 +235,114 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 
 % add letswave 6 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 6']));
 
-% start data counter
-data_counter = 1;
-fprintf('Loading:\n')
+% cycle though datasets and import in letswave format
+fprintf('loading:\n')
+for a = 1:length(params.data)
+    % identify the appropriate files
+    file2import = dir(sprintf('%s\\%s\\%s\\*%s*.vhdr', folder.input, AP_info(subject_idx).ID, params.folder, params.data{a}));
 
-% import RS-EEG
-for a = 1:length(eyes)
-    % identify the appropriate file
-    cd(folder.input)
-    file2import = dir(sprintf('*%s*%s*.vhdr', NLEP_info.single_subject(subject_idx).ID, eyes{a}));
-    
-    % cycle through timepoints
+    % remove average files if necessary
+    file2rmv = logical([]);
     for b = 1:length(file2import)
+        if contains(file2import(b).name, 'avg') 
+            file2rmv(b) = true;
+        else
+            file2rmv(b) = false;
+        end
+    end
+    file2import(file2rmv) = [];
+    
+    % check that the number of files matches
+    if size(file2import, 1) ~= params.data_n(a)
+        fprintf('WARNING: incorrect number (%d) of %s recordings was found!\n', size(file2import, 1), params.data{a})
+    end
+
+    % identify datasets
+    datanames = []; blocks = [];
+    for b = 1:length(file2import)
+        % prepare the dataname
+        dataname = replace(file2import(b).name, ' ', '');
+        underscores = strfind(dataname, '_');
+        dataname = dataname(underscores(1) + 1 : end - 5);
+        dataname = replace(dataname, '_', ' ');
+        if contains(dataname, 'LEP')
+            dataname = replace(dataname, 'LEP', 'laser');
+        elseif contains(dataname, 'SEP')
+            dataname = replace(dataname, 'SEP', 'electric');
+        elseif contains(dataname, 'VEP')
+            dataname = replace(dataname, 'SEP', 'visual');
+        end
+        datanames{b} = dataname;
+
+        % identify the block
+        block = regexp(file2import(b).name, 'b(\d+)', 'tokens');
+        block = str2num(block{1}{1});
+        blocks(b) = block;        
+    end
+
+    % identify repetition block
+    if a > 1 && a < 4
+        blocks_sorted = sort(blocks);
+        blocks_rep.b1 = blocks_sorted([1, 2]);
+        blocks_rep.b2 = blocks_sorted([3, 4]);
+    elseif a == 4
+        blocks_sorted = sort(blocks);
+        blocks_rep.b1 = blocks_sorted(1);
+        blocks_rep.b2 = blocks_sorted(2);
+    end
+
+    % cycle through datasets
+    for c = 1:length(file2import)
         % identify the filename
-        filename = sprintf('%s\\%s', folder.input, file2import(b).name);
+        filename = sprintf('%s\\%s', file2import(c).folder, file2import(c).name);
 
-        % create name for letswave
-        data_name = sprintf('%s RS %s %s', NLEP_info.single_subject(subject_idx).ID, eyes{a}, time{b});
-    
-        % provide update
-        fprintf('%s...\n', data_name)
-        
-        % encode the filename to metadata
-        NLEP_info.single_subject(subject_idx).dataset(data_counter).name = file2import(b).name;
-    
-        % import the dataset
-        [dataset(data_counter).header, dataset(data_counter).data, ~] = RLW_import_VHDR(filename);
-    
-        % rename in the header
-        dataset(data_counter).header.name = data_name;
-    
-        % update data counter
-        data_counter = data_counter + 1;
-    end
-end
-
-% import LEPs
-for b = 1:2
-    % identify the appropriate files
-    file2import = dir(sprintf('*%s*LEP_%s*.vhdr', NLEP_info.single_subject(subject_idx).ID, NLEP_info.single_subject(subject_idx).condition{b}));
-    % file2import = dir(sprintf('*LEP_%s*.vhdr', side{b}));
-    flip = false;
-    for c = 1:length(file2import)
-        if contains(file2import(c).name, 'avg')
-            file2keep(c) = false;
-        elseif str2num(file2import(c).name(end-6)) == 1
-            if flip
-                flip = false;
+        % deal with blocks
+        if contains(dataname, 'RS')
+            if blocks(c) < 4
+                datanames{c}(end - 1:end+1) = 'pre';
             else
-                flip = true;
+                datanames{c}(end - 1:end+2) = 'post';
             end
-            file2keep(c) = true;
         else
-            file2keep(c) = true;
+            breaks = strfind(datanames{c}, ' ');
+            if ismember(blocks(c), blocks_rep.b1)
+                datanames{c}(breaks(end) + 1 : end) = [];
+                datanames{c}(end + 1 : end + 2) = 'b1';
+            elseif ismember(blocks(c), blocks_rep.b2)
+                datanames{c}(breaks(end) + 1 : end) = [];
+                datanames{c}(end + 1 : end + 2) = 'b2';
+            end
         end
-    end
-    file2import = file2import(file2keep);
-    if flip
-       file2import = file2import([2, 1]);
-    end
-    clear file2keep
-
-    % load the dataset    
-    for d = 1:2
-        % create name for letswave
-        data_name = sprintf('%s LEP %s b%d', NLEP_info.single_subject(subject_idx).ID, ...
-            replace(NLEP_info.single_subject(subject_idx).condition{b}, '_', ' '), d);
 
         % provide update
-        fprintf('%s...\n', data_name)
-
-        % identify the appropriate file
-        filename = sprintf('%s\\%s', folder.input, file2import(d).name);
-
-        % encode the filename to metadata
-        NLEP_info.single_subject(subject_idx).dataset(data_counter).name = file2import(d).name;
-
-        % import the dataset
-        [dataset(data_counter).header, dataset(data_counter).data, ~] = RLW_import_VHDR(filename);
-
-        % rename in the header
-        dataset(data_counter).header.name = data_name;
+        fprintf('%s ...\n', datanames{c})
         
-        % update data counter
-        data_counter = data_counter + 1;
+        % encode 
+        AP_info(subject_idx).dataset(blocks(c) - 1).block = blocks(c);
+        AP_info(subject_idx).dataset(blocks(c) - 1).filename = file2import(c).name(1:end-5);
+        AP_info(subject_idx).dataset(blocks(c) - 1).data = datanames{c}(6:end);
+    
+        % import the dataset
+        dataset.raw(blocks(c) - 1).name = datanames{c}(6:end);
+        [dataset.raw(blocks(c) - 1).header, dataset.raw(blocks(c) - 1).data, ~] = RLW_import_VHDR(filename);
+    
+        % rename in the header
+        dataset.raw(blocks(c) - 1).header.name = datanames{c};
     end
 end
-
-% import SEPs
-for b = 1:2
-    % identify the appropriate files
-    file2import = dir(sprintf('*%s*SEP_%s*.vhdr', NLEP_info.single_subject(subject_idx).ID, NLEP_info.single_subject(subject_idx).condition{b}));
-    % file2import = dir(sprintf('*SEP_%s*.vhdr', side{b}));
-    flip = false;
-    for c = 1:length(file2import)
-        if contains(file2import(c).name, 'avg')
-            file2keep(c) = false;
-        elseif str2num(file2import(c).name(end-6)) == 1
-            if flip
-                flip = false;
-            else
-                flip = true;
-            end
-            file2keep(c) = true;
-        else
-            file2keep(c) = true;
-        end
-    end
-    file2import = file2import(file2keep);
-    if flip
-       file2import = file2import([2, 1]);
-    end
-    clear file2keep
-
-    % load the dataset    
-    for d = 1:2
-        % create name for letswave
-        data_name = sprintf('%s SEP %s b%d', NLEP_info.single_subject(subject_idx).ID, ...
-            replace(NLEP_info.single_subject(subject_idx).condition{b}, '_', ' '), d);
-
-        % provide update
-        fprintf('%s...\n', data_name)
-
-        % identify the appropriate file
-        filename = sprintf('%s\\%s', folder.input, file2import(d).name);
-
-        % encode the filename to metadata
-        NLEP_info.single_subject(subject_idx).dataset(data_counter).name = file2import(d).name;
-
-        % import the dataset
-        [dataset(data_counter).header, dataset(data_counter).data, ~] = RLW_import_VHDR(filename);
-
-        % rename in the header
-        dataset(data_counter).header.name = data_name;
-        
-        % update data counter
-        data_counter = data_counter + 1;
-    end
-end
+fprintf('done.\n')
 
 % provide update
-fprintf('Done. %d datasets imported.\n', length(dataset))
-sound(haleluja)
+fprintf('done.\n%d datasets imported.\n', length(dataset.raw))
 
 % save info structure and move on
-save(output_file, 'NLEP_info', '-append');
-cd(folder.data)
-clear eyes time a b c d data_counter data_name file2import file2keep filename flip side
+save(output_file, 'AP_info', '-append');
+clear a b c file2import file2rmv filename dataname datanames block blocks blocks_rep blocks_sorted breaks underscores
 
 %% 3) pre-processing block 1 
 % ----- section input -----
@@ -410,7 +363,7 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 
 % add letswave 7 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 7']));
@@ -430,8 +383,8 @@ for d = 1:length(dataset)
         'suffix', '', 'is_save', 0);
     lwdata = FLW_electrode_location_assign.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(1).process = sprintf('1 - electrode coordinates assigned (standard 10-20-cap81)');
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(1).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.block_1(1).process = sprintf('1 - electrode coordinates assigned (standard 10-20-cap81)');
+        AP_info.single_subject(subject_idx).preprocessing.block_1(1).date = sprintf('%s', date);
     end
 
     % remove DC + linear detrend
@@ -439,8 +392,8 @@ for d = 1:length(dataset)
     option = struct('linear_detrend', 1, 'suffix', param.suffix{1}, 'is_save', 0);
     lwdata = FLW_dc_removal.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('2 - DC correction + linear detrend');
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('2 - DC correction + linear detrend');
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
     end
 
     % bandpass
@@ -449,8 +402,8 @@ for d = 1:length(dataset)
         'filter_order', 4, 'suffix', param.suffix{2}, 'is_save', 0);
     lwdata = FLW_butterworth_filter.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('3 - bandpass filtered [%.1f %.1f]Hz - Butterworth, 4th order', param.bandpass(1), param.bandpass(2));
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('3 - bandpass filtered [%.1f %.1f]Hz - Butterworth, 4th order', param.bandpass(1), param.bandpass(2));
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
     end
 
     % 50 Hz notch
@@ -459,8 +412,8 @@ for d = 1:length(dataset)
         'harmonic_num', 2,'suffix', param.suffix{3},'is_save', 0);
     lwdata = FLW_FFT_filter.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('4 - FFT notch filtered at 50 Hz');
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('4 - FFT notch filtered at 50 Hz');
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
     end
 
     % downsample and save
@@ -468,8 +421,8 @@ for d = 1:length(dataset)
     option = struct('x_dsratio', param.ds_ratio, 'suffix', param.suffix{4}, 'is_save',1);
     lwdata = FLW_downsample.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('5 - downsampled %d times --> final SR %d Hz', param.ds_ratio, 1/lwdata.header.xstep);
-        NLEP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('5 - downsampled %d times --> final SR %d Hz', param.ds_ratio, 1/lwdata.header.xstep);
+        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
     end
 
     % update the dataset
@@ -482,7 +435,7 @@ fprintf('Done.\n')
 sound(haleluja)
 
 % save info structure and move on
-save(output_file, 'NLEP_info', '-append');
+save(output_file, 'AP_info', '-append');
 clear param d lwdata option 
 
 %% 4) visual check 1 + adjust triggers
@@ -510,7 +463,7 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 
 % add letswave 7 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 7']));
@@ -533,9 +486,9 @@ for d = 1:length(dataset)
         'apply_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, 'suffix', param.suffix{1}, 'is_save', 0);
     lwdata = FLW_rereference.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(1).process = sprintf('1 - re-referenced to common average');
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(1).params = [];
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(1).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.ERP(1).process = sprintf('1 - re-referenced to common average');
+        AP_info.single_subject(subject_idx).preprocessing.ERP(1).params = [];
+        AP_info.single_subject(subject_idx).preprocessing.ERP(1).date = sprintf('%s', date);
     end
 
     % check events and re-label
@@ -559,9 +512,9 @@ for d = 1:length(dataset)
         'x_duration', param.epoch(2)-param.epoch(1), 'suffix', param.suffix{2}, 'is_save', 0);
     lwdata = FLW_segmentation.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(2).process = sprintf('2 - segmented [%d %d]ms relative to stimulus', param.epoch(1)*1000, param.epoch(2)*1000);
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(2).params = [];
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(2).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.ERP(2).process = sprintf('2 - segmented [%d %d]ms relative to stimulus', param.epoch(1)*1000, param.epoch(2)*1000);
+        AP_info.single_subject(subject_idx).preprocessing.ERP(2).params = [];
+        AP_info.single_subject(subject_idx).preprocessing.ERP(2).date = sprintf('%s', date);
     end
 
     % remove DC + linear detrend
@@ -569,9 +522,9 @@ for d = 1:length(dataset)
     option = struct('linear_detrend', 1, 'suffix', param.suffix{3}, 'is_save', 1);
     lwdata = FLW_dc_removal.get_lwdata(lwdata, option);
     if d == 1
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(3).process = sprintf('3 - DC correction + linear detrend');
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(3).params = [];
-        NLEP_info.single_subject(subject_idx).preprocessing.ERP(3).date = sprintf('%s', date);
+        AP_info.single_subject(subject_idx).preprocessing.ERP(3).process = sprintf('3 - DC correction + linear detrend');
+        AP_info.single_subject(subject_idx).preprocessing.ERP(3).params = [];
+        AP_info.single_subject(subject_idx).preprocessing.ERP(3).date = sprintf('%s', date);
     end
 
     % update the dataset
@@ -584,7 +537,7 @@ fprintf('Done.\n')
 sound(haleluja)
 
 % save info structure and move on
-save(output_file, 'NLEP_info', '-append');
+save(output_file, 'AP_info', '-append');
 clear param d e lwdata option dataset
 
 %% 6) pre-process RS-EEG 
@@ -609,7 +562,7 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 
 % add letswave 7 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 7'])); 
@@ -618,12 +571,12 @@ addpath(genpath([folder.toolbox '\letswave 7']));
 for a = 1:length(param.time)
     for b = 1:length(param.eyes)
         % provide update
-        fprintf('dataset: ''%s RS %s %s''\n', NLEP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a})
+        fprintf('dataset: ''%s RS %s %s''\n', AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a})
 
         % load the data
         fprintf('loading...')
-        load(sprintf('%s %s RS %s %s.mat', param.prefix, NLEP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a}));
-        load(sprintf('%s %s RS %s %s.lw6', param.prefix, NLEP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a}), '-mat');
+        load(sprintf('%s %s RS %s %s.mat', param.prefix, AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a}));
+        load(sprintf('%s %s RS %s %s.lw6', param.prefix, AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a}), '-mat');
         lwdata.data = data;
         lwdata.header = header;
         clear data header
@@ -634,13 +587,13 @@ for a = 1:length(param.time)
             'apply_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, 'suffix', param.suffix{1}, 'is_save', 0);
         lwdata = FLW_rereference.get_lwdata(lwdata, option);
         if a == 1 & b == 1
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(1).process = sprintf('1 - re-referenced to common average');
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(1).params = [];
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(1).date = sprintf('%s', date);
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(1).process = sprintf('1 - re-referenced to common average');
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(1).params = [];
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(1).date = sprintf('%s', date);
         end
 
         % parameters for visualization
-        data_name = sprintf('%s RS %s %s', NLEP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a});
+        data_name = sprintf('%s RS %s %s', AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a});
         data_visual = squeeze(lwdata.data);
         x = 0:lwdata.header.xstep:size(data_visual, 2)*lwdata.header.xstep;
         if size(lwdata.header.events, 2) == 2 
@@ -663,13 +616,13 @@ for a = 1:length(param.time)
         lwdata.header.datasize = size(lwdata.data);
         lwdata.header.events = [];
         if a == 1 & b == 1
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(2).process = sprintf('2 - 1 min cropped from continuous EEG');
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(2).date = sprintf('%s', date);
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).dataset = data_name;
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).limits = limits;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).process = sprintf('2 - 1 min cropped from continuous EEG');
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).date = sprintf('%s', date);
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).dataset = data_name;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).limits = limits;
         else
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).dataset = data_name;
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).limits = limits;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).dataset = data_name;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).limits = limits;
         end
 
         % chunk
@@ -677,20 +630,20 @@ for a = 1:length(param.time)
         option = struct('chunk_onset', 0, 'chunk_duration', param.epoch(1), 'chunk_interval', param.epoch(1), 'suffix', param.suffix{2}, 'is_save', 1);
         lwdata = FLW_segmentation_chunk.get_lwdata(lwdata,option);
         if a == 1 & b == 1
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(3).process = sprintf('3 - continuous EEG split into successive chunks');
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(3).params.epoch_length = param.epoch(1);
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(3).date = sprintf('%s', date);
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(3).process = sprintf('3 - continuous EEG split into successive chunks');
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(3).params.epoch_length = param.epoch(1);
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(3).date = sprintf('%s', date);
         end
 
         % update and save output
         fprintf('done\n.')
-        save(output_file, 'NLEP_info', '-append');
+        save(output_file, 'AP_info', '-append');
     end
 end
 
 % identify stimulation conditions
 for c = 1:2
-    param.condition{c} = replace(NLEP_info.single_subject(subject_idx).condition{c}, '_', ' '); 
+    param.condition{c} = replace(AP_info.single_subject(subject_idx).condition{c}, '_', ' '); 
     param.block{c} = sprintf('b%d', c);
 end
 
@@ -698,12 +651,12 @@ end
 for a = 1:length(param.condition)
     for b = 1:length(param.block)
         % provide update
-        fprintf('dataset: ''%s LEP %s %s''\n', NLEP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b})
+        fprintf('dataset: ''%s LEP %s %s''\n', AP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b})
 
         % load the data
         fprintf('loading...')
-        load(sprintf('%s %s LEP %s %s.mat', param.prefix, NLEP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b}));
-        load(sprintf('%s %s LEP %s %s.lw6', param.prefix, NLEP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b}), '-mat');
+        load(sprintf('%s %s LEP %s %s.mat', param.prefix, AP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b}));
+        load(sprintf('%s %s LEP %s %s.lw6', param.prefix, AP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b}), '-mat');
         lwdata.data = data;
         lwdata.header = header;
 
@@ -773,11 +726,11 @@ for a = 1:length(param.condition)
         'x_duration', single_trial_epoch.relaxed, 'suffix', param.suffix{3}, 'is_save', 0);
         lwdata = FLW_segmentation.get_lwdata(lwdata, option);
         if a == 1 & b == 1
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(4).process = sprintf('4 - single trial ''relaxed'' RS-EEG epochs extracted');
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.eventcode = param.eventcode{2};
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.start = -1 - single_trial_epoch.relaxed;
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.end = -1;
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(4).date = sprintf('%s', date);
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).process = sprintf('4 - single trial ''relaxed'' RS-EEG epochs extracted');
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.eventcode = param.eventcode{2};
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.start = -1 - single_trial_epoch.relaxed;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.end = -1;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).date = sprintf('%s', date);
         end
 
         % remove DC + linear detrend
@@ -794,11 +747,11 @@ for a = 1:length(param.condition)
         'x_duration', param.epoch(2), 'suffix', param.suffix{3}, 'is_save', 0);
         lwdata = FLW_segmentation.get_lwdata(lwdata, option);
         if a == 1 & b == 1
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(5).process = sprintf('5 - single trial ''ready'' RS-EEG epochs extracted');
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.eventcode = param.eventcode{3};
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.start = -single_trial_epoch.ready;
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.end = 0;
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(5).date = sprintf('%s', date);
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).process = sprintf('5 - single trial ''ready'' RS-EEG epochs extracted');
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.eventcode = param.eventcode{3};
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.start = -single_trial_epoch.ready;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.end = 0;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).date = sprintf('%s', date);
         end
 
         % remove DC + linear detrend
@@ -807,13 +760,13 @@ for a = 1:length(param.condition)
         option = struct('linear_detrend', 1, 'suffix', [param.suffix{4} ' ' param.eventcode{2}], 'is_save', 1);
         lwdata = FLW_dc_removal.get_lwdata(lwdata, option);      
         if a == 1 & b == 1
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(6).process = sprintf('6 - single trial DC correction + linear detrend');
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(6).date = sprintf('%s', date);
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(6).process = sprintf('6 - single trial DC correction + linear detrend');
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(6).date = sprintf('%s', date);
         end
 
         % update and save output
         fprintf('done\n.')
-        save(output_file, 'NLEP_info', '-append');
+        save(output_file, 'AP_info', '-append');
     end
 end
 
@@ -845,7 +798,7 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 % load('NLEP_info_backup.mat');
 
 % interpolated channels
@@ -854,10 +807,10 @@ dlgtitle = 'interpolated channels';
 dims = [1 35];
 definput = {'none', 'none'};
 input = inputdlg(prompt,dlgtitle,dims,definput);
-NLEP_info.single_subject(subject_idx).preprocessing.ERP(4).process = sprintf('4 - interpolated channels');
-NLEP_info.single_subject(subject_idx).preprocessing.ERP(4).params.interpolated = input{1};
-NLEP_info.single_subject(subject_idx).preprocessing.ERP(4).params.sources = input{2};
-NLEP_info.single_subject(subject_idx).preprocessing.ERP(4).date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).preprocessing.ERP(4).process = sprintf('4 - interpolated channels');
+AP_info.single_subject(subject_idx).preprocessing.ERP(4).params.interpolated = input{1};
+AP_info.single_subject(subject_idx).preprocessing.ERP(4).params.sources = input{2};
+AP_info.single_subject(subject_idx).preprocessing.ERP(4).date = sprintf('%s', date);
 clear prompt dlgtitle definput input
 
 % discarded epochs
@@ -866,7 +819,7 @@ stim = {'LEP' 'SEP'};
 block = {'b1' 'b2'};
 for t = 1:2
     for c = 1:2
-        cond = sprintf('%s', replace(NLEP_info.single_subject(subject_idx).condition{c}, '_', ' '));
+        cond = sprintf('%s', replace(AP_info.single_subject(subject_idx).condition{c}, '_', ' '));
         for b = 1:2
             erp{end+1} = sprintf('%s %s %s', stim{t}, cond, block{b});        
         end
@@ -876,50 +829,50 @@ prompt = erp;
 dlgtitle = 'discarded epochs';
 definput = {'', '', '', '', '', '', '', ''};
 input = inputdlg(prompt,dlgtitle,dims,definput);
-NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).process = sprintf('5 - discarded epochs');
+AP_info.single_subject(subject_idx).preprocessing.ERP(5).process = sprintf('5 - discarded epochs');
 for a = 1:length(erp)
-    NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(a).dataset = erp{a};
-    NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(a).discarded = str2num(input{a});
+    AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(a).dataset = erp{a};
+    AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(a).discarded = str2num(input{a});
 end
-NLEP_info.single_subject(subject_idx).preprocessing.ERP(end).date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).preprocessing.ERP(end).date = sprintf('%s', date);
 clear erp stim block cond a b c t prompt dlgtitle definput input dims
 
 % discard correspondig single-trial RS-EEG epochs 
 discarded = false;
 for d = 1:4
-    if ~isempty(NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded) 
+    if ~isempty(AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded) 
         % note that some epochs were discarded
         discarded = true;
 
         % discard corresponding epochs from 'relaxed' and 'ready' datasets
         for a = 1:length(param.time)
             % identify and load dataset
-            data_name = sprintf('%s %s %s %s', param.time{a}, param.prefix,  NLEP_info.single_subject(subject_idx).ID, NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).dataset);
+            data_name = sprintf('%s %s %s %s', param.time{a}, param.prefix,  AP_info.single_subject(subject_idx).ID, AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).dataset);
             load([data_name '.mat']);
             load([data_name '.lw6'], '-mat');
 
             % remove epochs and save
-            data(NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded, :, :, :, :, :) = [];
+            data(AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded, :, :, :, :, :) = [];
             header.datasize = size(data);
             save([data_name '.mat'], 'data');
             save([data_name '.lw6'], 'header');
         end
     end
 end
-NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(7).process = sprintf('7 - single-trial epochs removed based on LEPs');
-NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(7).date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).process = sprintf('7 - single-trial epochs removed based on LEPs');
+AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).date = sprintf('%s', date);
 if discarded               
     for d = 1:4
-        if ~isempty(NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded) 
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(7).params.dataset = NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).dataset;
-            NLEP_info.single_subject(subject_idx).preprocessing.RSEEG(7).params.discarded = NLEP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded;
+        if ~isempty(AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded) 
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).params.dataset = AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).dataset;
+            AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).params.discarded = AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded;
         end
     end
 end
 fprintf('RS-EEG epochs matched to LEPs.\n')
 
 % save info structure and move on
-save(output_file, 'NLEP_info', '-append');
+save(output_file, 'AP_info', '-append');
 % save('NLEP_info_backup.mat', 'NLEP_info');
 clear param input a d filename option lwdata seed discarded data_name data header
 
@@ -944,12 +897,12 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 % load('NLEP_info_backup.mat');
 
 % crop the ERP data
 fprintf('cropping ERP data...')
-file2crop = dir(sprintf('%s*%s*.mat', param.prefix_ERP, NLEP_info.single_subject(subject_idx).ID));
+file2crop = dir(sprintf('%s*%s*.mat', param.prefix_ERP, AP_info.single_subject(subject_idx).ID));
 if length(file2crop) == param.n_files(1)
     for d = 1:length(file2crop)
         % load data and header
@@ -970,7 +923,7 @@ else
 end
 
 % define the datasets with associated ICA matrix
-file2process = dir(sprintf('*%s*%s*.mat', param.prefix_all, NLEP_info.single_subject(subject_idx).ID));
+file2process = dir(sprintf('*%s*%s*.mat', param.prefix_all, AP_info.single_subject(subject_idx).ID));
 if length(file2process) == param.n_files(2)
     for i = 1:length(file2process)
         filenames{i} = sprintf('%s %s',param.suffix{1}, file2process(i).name);
@@ -1038,15 +991,15 @@ for f = 1:size(ICA.unmix, 1)
     xlabel('Frequency (Hz)');
     ylabel('Power (dB)');
 end
-saveas(gcf, sprintf('%s\\figures\\ICA_%s.png', folder.output, NLEP_info.single_subject(subject_idx).ID));
+saveas(gcf, sprintf('%s\\figures\\ICA_%s.png', folder.output, AP_info.single_subject(subject_idx).ID));
 
 % save parameters 
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.n_components = size(ICA.unmix, 1);
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.matrix = ICA.matrix;
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.unmix = ICA.unmix;
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.psd = ICA.psd;
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.freq = freq;
-save(output_file, 'NLEP_info', '-append');
+AP_info.single_subject(subject_idx).preprocessing.ICA.n_components = size(ICA.unmix, 1);
+AP_info.single_subject(subject_idx).preprocessing.ICA.matrix = ICA.matrix;
+AP_info.single_subject(subject_idx).preprocessing.ICA.unmix = ICA.unmix;
+AP_info.single_subject(subject_idx).preprocessing.ICA.psd = ICA.psd;
+AP_info.single_subject(subject_idx).preprocessing.ICA.freq = freq;
+save(output_file, 'AP_info', '-append');
 % save('NLEP_info_backup.mat', 'NLEP_info')
 
 clear param file2crop c d e f i header data file2process filenames ICA psd freq 
@@ -1068,7 +1021,7 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 % load('NLEP_info_backup.mat');
 
 % encode ICA outcome
@@ -1077,17 +1030,17 @@ dlgtitle = 'ICA';
 dims = [1 40];
 definput = {'', '', '', ''};
 input = inputdlg(prompt,dlgtitle,dims,definput);
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept = NLEP_info.single_subject(subject_idx).preprocessing.ICA.n_components...
+AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept = AP_info.single_subject(subject_idx).preprocessing.ICA.n_components...
     - length([str2num(input{1}), str2num(input{2}), str2num(input{3}), str2num(input{4})]);
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.blinks = str2num(input{1});
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.horizontal = str2num(input{2});
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.muscles = str2num(input{3});
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.electrodes = str2num(input{4});
-NLEP_info.single_subject(subject_idx).preprocessing.ICA.date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.blinks = str2num(input{1});
+AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.horizontal = str2num(input{2});
+AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.muscles = str2num(input{3});
+AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.electrodes = str2num(input{4});
+AP_info.single_subject(subject_idx).preprocessing.ICA.date = sprintf('%s', date);
 clear prompt dlgtitle dims definput input
 
 % save info structure and move on
-save(output_file, 'NLEP_info', '-append');
+save(output_file, 'AP_info', '-append');
 % save('NLEP_info_backup.mat', 'NLEP_info')
 clear param subject_idx
 
@@ -1114,14 +1067,14 @@ end
 clear prompt dlgtitle dims definput input
 
 % update the info structure
-load(output_file, 'NLEP_info');
+load(output_file, 'AP_info');
 
 % add letswave 7 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 7']));
 
 % identify LEP datasets
 cd(folder.input)
-file2process = dir(sprintf('%s*%s LEP*.mat', param.prefix, NLEP_info.single_subject(subject_idx).ID));
+file2process = dir(sprintf('%s*%s LEP*.mat', param.prefix, AP_info.single_subject(subject_idx).ID));
 cd(folder.data)
 
 % re-reference to chosen frontal central electrode
@@ -1149,7 +1102,7 @@ else
 end
 
 % open letswave and manually run ICA
-fprintf('You can run the ICA now - for subject %d, compute %d components!\n', subject_idx, NLEP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept)
+fprintf('You can run the ICA now - for subject %d, compute %d components!\n', subject_idx, AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept)
 addpath(genpath([folder.toolbox '\letswave 6']));
 letswave
 
@@ -1201,7 +1154,7 @@ for f = 1:size(ICA.unmix, 1)
     xlabel('time (ms)');
     ylabel('trial');
 end
-saveas(gcf, sprintf('%s\\figures\\ICA_N1_%s.png', folder.output, NLEP_info.single_subject(subject_idx).ID));
+saveas(gcf, sprintf('%s\\figures\\ICA_N1_%s.png', folder.output, AP_info.single_subject(subject_idx).ID));
 
 % identify outcome filenames and wait for them to appear
 for i = 1:length(filenames)
@@ -1294,7 +1247,7 @@ for d = 1:length(filenames_filtered)
         title('after ICA');
     end
 end
-saveas(gcf, sprintf('%s\\figures\\ICA_N1_filtered_%s.png', folder.output, NLEP_info.single_subject(subject_idx).ID));
+saveas(gcf, sprintf('%s\\figures\\ICA_N1_filtered_%s.png', folder.output, AP_info.single_subject(subject_idx).ID));
 
 % % update output dataset
 % for d = 1:length(filenames)
@@ -1314,19 +1267,19 @@ dlgtitle = 'N1 ICA';
 dims = [1 40];
 definput = {''};
 input = inputdlg(prompt,dlgtitle,dims,definput);
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(1).process = '1 - data re-referenced for N1 analysis'; 
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(1).params.ref = param.ref;
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(1).date = sprintf('%s', date);
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(2).process = '2 - N2P2 component filtered out with ICA'; 
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(2).params.n_components = NLEP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept;
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(2).params.matrix = ICA.matrix;
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(2).params.unmix = ICA.unmix;
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(2).params.removed = input;
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(2).date = sprintf('%s', date);
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(3).process = '3 - all LEP datasets baseline corrected'; 
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(3).params.baseline = param.baseline;
-NLEP_info.single_subject(subject_idx).preprocessing.LEP(3).date = sprintf('%s', date);
-save(output_file, 'NLEP_info', '-append');
+AP_info.single_subject(subject_idx).preprocessing.LEP(1).process = '1 - data re-referenced for N1 analysis'; 
+AP_info.single_subject(subject_idx).preprocessing.LEP(1).params.ref = param.ref;
+AP_info.single_subject(subject_idx).preprocessing.LEP(1).date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).preprocessing.LEP(2).process = '2 - N2P2 component filtered out with ICA'; 
+AP_info.single_subject(subject_idx).preprocessing.LEP(2).params.n_components = AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept;
+AP_info.single_subject(subject_idx).preprocessing.LEP(2).params.matrix = ICA.matrix;
+AP_info.single_subject(subject_idx).preprocessing.LEP(2).params.unmix = ICA.unmix;
+AP_info.single_subject(subject_idx).preprocessing.LEP(2).params.removed = input;
+AP_info.single_subject(subject_idx).preprocessing.LEP(2).date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).preprocessing.LEP(3).process = '3 - all LEP datasets baseline corrected'; 
+AP_info.single_subject(subject_idx).preprocessing.LEP(3).params.baseline = param.baseline;
+AP_info.single_subject(subject_idx).preprocessing.LEP(3).date = sprintf('%s', date);
+save(output_file, 'AP_info', '-append');
 
 clear param file2process d i filenames filepath option lwdata data header ICA x x_start x_end e f filenames_filtered ...
     data_in peak_raw data_topo_raw data_filt peak_filt data_topo_filt ylim prompt dlgtitle dims definput input eoi
@@ -1369,18 +1322,18 @@ addpath(genpath([folder.toolbox '\letswave 7']));
 
 % identify LEP datasets to process
 folder.input = uigetdir(pwd, 'Choose the input folder');            
-file2process = [dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, NLEP_info.single_subject(subject_idx).ID, param.prefix{1}, NLEP_info.single_subject(subject_idx).ID)); ...
-    dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, NLEP_info.single_subject(subject_idx).ID, param.prefix{2}, NLEP_info.single_subject(subject_idx).ID))];
+file2process = [dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix{1}, AP_info.single_subject(subject_idx).ID)); ...
+    dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix{2}, AP_info.single_subject(subject_idx).ID))];
 
 % determine conditions
-for c = 1:length(NLEP_info.single_subject(subject_idx).condition)
-    param.conditions{c} = replace(NLEP_info.single_subject(subject_idx).condition{c}, '_', ' ');
+for c = 1:length(AP_info.single_subject(subject_idx).condition)
+    param.conditions{c} = replace(AP_info.single_subject(subject_idx).condition{c}, '_', ' ');
 end
-NLEP_info.single_subject(subject_idx).LEP(1).process = '1 - preprocessed data selected';
-NLEP_info.single_subject(subject_idx).LEP(1).params.conditions = param.conditions;
-NLEP_info.single_subject(subject_idx).LEP(1).params.datasets.N1 = {file2process(5:8).name};
-NLEP_info.single_subject(subject_idx).LEP(1).params.datasets.N2P2 = {file2process(1:4).name};
-NLEP_info.single_subject(subject_idx).LEP(1).date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).LEP(1).process = '1 - preprocessed data selected';
+AP_info.single_subject(subject_idx).LEP(1).params.conditions = param.conditions;
+AP_info.single_subject(subject_idx).LEP(1).params.datasets.N1 = {file2process(5:8).name};
+AP_info.single_subject(subject_idx).LEP(1).params.datasets.N2P2 = {file2process(1:4).name};
+AP_info.single_subject(subject_idx).LEP(1).date = sprintf('%s', date);
 NLEP_measures(subject_idx).LEP_avg.conditions = param.conditions;
 
 % prepare data
@@ -1482,13 +1435,13 @@ for p = 1:length(param.dataset)
         end
     end
 end
-NLEP_info.single_subject(subject_idx).LEP(2).process = '2 - target electrode selected and CWT filtered';
-NLEP_info.single_subject(subject_idx).LEP(2).params.EOIs = unique(eoi_all);
-NLEP_info.single_subject(subject_idx).LEP(2).params.P_mask = P_mask;
-NLEP_info.single_subject(subject_idx).LEP(2).date = sprintf('%s', date);
+AP_info.single_subject(subject_idx).LEP(2).process = '2 - target electrode selected and CWT filtered';
+AP_info.single_subject(subject_idx).LEP(2).params.EOIs = unique(eoi_all);
+AP_info.single_subject(subject_idx).LEP(2).params.P_mask = P_mask;
+AP_info.single_subject(subject_idx).LEP(2).date = sprintf('%s', date);
 
 % save the output figure
-saveas(fig1, sprintf('%s\\figures\\CWT_%s.png', folder.output, NLEP_info.single_subject(subject_idx).ID))
+saveas(fig1, sprintf('%s\\figures\\CWT_%s.png', folder.output, AP_info.single_subject(subject_idx).ID))
 
 % extract single-trial peak values
 fprintf('extracting peak measures ...\n')
@@ -1545,18 +1498,18 @@ for p = 1:length(param.peak)
             case 1
                 NLEP_measures(subject_idx).LEP_avg.N1.CWT_filtered.latency(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
                 NLEP_measures(subject_idx).LEP_avg.N1.CWT_filtered.amplitude(c) = y_peak;
-                NLEP_info.single_subject(subject_idx).LEP(3).params.TOI_peak.N1(c, :) = [x_peak_start, x_peak_end];
-                NLEP_info.single_subject(subject_idx).LEP(3).params.peak_avg.N1(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
+                AP_info.single_subject(subject_idx).LEP(3).params.TOI_peak.N1(c, :) = [x_peak_start, x_peak_end];
+                AP_info.single_subject(subject_idx).LEP(3).params.peak_avg.N1(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
             case 2 
                 NLEP_measures(subject_idx).LEP_avg.N2.CWT_filtered.latency(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
                 NLEP_measures(subject_idx).LEP_avg.N2.CWT_filtered.amplitude(c) = y_peak;
-                NLEP_info.single_subject(subject_idx).LEP(3).params.TOI_peak.N2(c, :) = [x_peak_start, x_peak_end];
-                NLEP_info.single_subject(subject_idx).LEP(3).params.peak_avg.N2(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
+                AP_info.single_subject(subject_idx).LEP(3).params.TOI_peak.N2(c, :) = [x_peak_start, x_peak_end];
+                AP_info.single_subject(subject_idx).LEP(3).params.peak_avg.N2(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
             case 3
                 NLEP_measures(subject_idx).LEP_avg.P2.CWT_filtered.latency(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
                 NLEP_measures(subject_idx).LEP_avg.P2.CWT_filtered.amplitude(c) = y_peak;
-                NLEP_info.single_subject(subject_idx).LEP(3).params.TOI_peak.P2(c, :) = [x_peak_start, x_peak_end];
-                NLEP_info.single_subject(subject_idx).LEP(3).params.peak_avg.P2(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
+                AP_info.single_subject(subject_idx).LEP(3).params.TOI_peak.P2(c, :) = [x_peak_start, x_peak_end];
+                AP_info.single_subject(subject_idx).LEP(3).params.peak_avg.P2(c) = peak_sample*lwdata.header.xstep + lwdata.header.xstart;
         end       
         
         %% prepare template data
@@ -1617,16 +1570,16 @@ for p = 1:length(param.peak)
         % encode to NLEP info
         switch p
             case 1
-                NLEP_info.single_subject(subject_idx).LEP(3).params.TOI_window.N1(c, :) = [x_start, x_end];
+                AP_info.single_subject(subject_idx).LEP(3).params.TOI_window.N1(c, :) = [x_start, x_end];
             case 2 
-                NLEP_info.single_subject(subject_idx).LEP(3).params.TOI_window.N2(c, :) = [x_start, x_end];
-                NLEP_info.single_subject(subject_idx).LEP(3).params.inversion_point(c) = inverse_point*lwdata.header.xstep;
+                AP_info.single_subject(subject_idx).LEP(3).params.TOI_window.N2(c, :) = [x_start, x_end];
+                AP_info.single_subject(subject_idx).LEP(3).params.inversion_point(c) = inverse_point*lwdata.header.xstep;
                 if c == 1
-                    NLEP_info.single_subject(subject_idx).LEP(3).params.gaussian.width = param.gaussian_size;
-                    NLEP_info.single_subject(subject_idx).LEP(3).params.gaussian.sigma = param.gaussian_sigma;
+                    AP_info.single_subject(subject_idx).LEP(3).params.gaussian.width = param.gaussian_size;
+                    AP_info.single_subject(subject_idx).LEP(3).params.gaussian.sigma = param.gaussian_sigma;
                 end
             case 3
-                NLEP_info.single_subject(subject_idx).LEP(3).params.TOI_window.P2(c, :) = [x_start, x_end];
+                AP_info.single_subject(subject_idx).LEP(3).params.TOI_window.P2(c, :) = [x_start, x_end];
         end
 
         %% compute regressors based on the template
@@ -1807,17 +1760,17 @@ for p = 1:length(param.peak)
 end
 
 % save figure with regressors
-saveas(fig2, sprintf('%s\\figures\\regressors_%s.png', folder.output, NLEP_info.single_subject(subject_idx).ID))
+saveas(fig2, sprintf('%s\\figures\\regressors_%s.png', folder.output, AP_info.single_subject(subject_idx).ID))
 
 % endcode and save NLEP info
-NLEP_info.single_subject(subject_idx).LEP(3).process = '3 - single-trial peak values extracted';
-NLEP_info.single_subject(subject_idx).LEP(3).params.conditions = param.conditions;
-NLEP_info.single_subject(subject_idx).LEP(3).params.method = 'MLR with dispersion term';
-NLEP_info.single_subject(subject_idx).LEP(3).params.regressors = regressors;
-NLEP_info.single_subject(subject_idx).LEP(3).params.coefficients = coefficients;
-NLEP_info.single_subject(subject_idx).LEP(3).params.fits = fit;
-NLEP_info.single_subject(subject_idx).LEP(3).date = sprintf('%s', date);
-save(output_file, 'NLEP_info', '-append');
+AP_info.single_subject(subject_idx).LEP(3).process = '3 - single-trial peak values extracted';
+AP_info.single_subject(subject_idx).LEP(3).params.conditions = param.conditions;
+AP_info.single_subject(subject_idx).LEP(3).params.method = 'MLR with dispersion term';
+AP_info.single_subject(subject_idx).LEP(3).params.regressors = regressors;
+AP_info.single_subject(subject_idx).LEP(3).params.coefficients = coefficients;
+AP_info.single_subject(subject_idx).LEP(3).params.fits = fit;
+AP_info.single_subject(subject_idx).LEP(3).date = sprintf('%s', date);
+save(output_file, 'AP_info', '-append');
 
 % endcode and save NLEP_measures
 NLEP_measures(subject_idx).LEP_ST.conditions = param.conditions;
@@ -1829,7 +1782,7 @@ NLEP_measures(subject_idx).LEP_ST.energy = LEP_ST.energy;
 save(output_file, 'NLEP_measures', '-append');
 
 % save data to output structure
-NLEP_data.LEP(subject_idx).ID = NLEP_info.single_subject(subject_idx).ID;
+NLEP_data.LEP(subject_idx).ID = AP_info.single_subject(subject_idx).ID;
 NLEP_data.LEP(subject_idx).conditions = param.conditions;
 NLEP_data.LEP(subject_idx).unfiltered.N1 = data.N1;
 NLEP_data.LEP(subject_idx).unfiltered.N2P2 = data.N2P2;
@@ -1868,16 +1821,16 @@ if ~exist("folder")
     folder.output = uigetdir(pwd, 'Choose the OneDrive folder'); 
 end
 cd(folder.input)
-load(output_file, 'NLEP_info', 'NLEP_measures', 'NLEP_data');
+load(output_file, 'AP_info', 'NLEP_measures', 'NLEP_data');
 
 % add raw N1 data to the dataset, append block numbers
 fprintf('adding raw N1 data to the output structure: subject')
-for subject_idx = 1:length(NLEP_info.single_subject)
+for subject_idx = 1:length(AP_info.single_subject)
     % provide update
     fprintf(' %d ...', subject_idx)
 
     % identify datasets and conditions 
-    file2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, NLEP_info.single_subject(subject_idx).ID, param.prefix_N1));
+    file2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix_N1));
     conditions = NLEP_data.LEP(subject_idx).conditions;
     if ~length(file2process) == param.n_files
         fprintf('ERROR: incorrect number of datasets (%d) found in the directory!\n', length(file2process));
@@ -1920,7 +1873,7 @@ fprintf('done.\n')
 
 % calculate average values 
 fprintf('calculating mean values: subject')
-for subject_idx = 1:length(NLEP_info.single_subject)
+for subject_idx = 1:length(AP_info.single_subject)
     % provide update
     fprintf(' %d ...', subject_idx)
 
@@ -2083,12 +2036,12 @@ for subject_idx = 7%1:length(NLEP_info.single_subject)
     end
 
     % update and save output structures 
-    NLEP_info.single_subject(subject_idx).LEP(4).process = '4 - peak measures extracted from average data';
-    NLEP_info.single_subject(subject_idx).LEP(4).date = sprintf('%s', date);
-    save(output_file, 'NLEP_info', 'NLEP_measures', '-append');
+    AP_info.single_subject(subject_idx).LEP(4).process = '4 - peak measures extracted from average data';
+    AP_info.single_subject(subject_idx).LEP(4).date = sprintf('%s', date);
+    save(output_file, 'AP_info', 'NLEP_measures', '-append');
 
     % save figure, update counter
-    saveas(fig, sprintf('%s\\figures\\LEP_peaks_avg_%s.png', folder.output, NLEP_info.single_subject(subject_idx).ID))
+    saveas(fig, sprintf('%s\\figures\\LEP_peaks_avg_%s.png', folder.output, AP_info.single_subject(subject_idx).ID))
     figure_counter = figure_counter + 1;
 end
 
@@ -2113,7 +2066,7 @@ if ~exist("folder")
     output_file = sprintf('%s\\%s_output.mat', folder.output, study);
 end
 cd(folder.data)
-load(output_file, 'NLEP_info', 'NLEP_measures', 'NLEP_data', 'slopes');
+load(output_file, 'AP_info', 'NLEP_measures', 'NLEP_data', 'slopes');
 
 % load default header
 load(sprintf('%s\\dataset_default.lw6', folder.output), '-mat');
@@ -2124,10 +2077,10 @@ ft_defaults;
 
 % extract PSD and measures
 figure_counter = 1; 
-for subject_idx = 1:length(NLEP_info.single_subject)  
+for subject_idx = 1:length(AP_info.single_subject)  
     % identify RS-EEG data 
-    files2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, NLEP_info.single_subject(subject_idx).ID, param.prefix_data{1}));
-    files2process = [files2process; dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, NLEP_info.single_subject(subject_idx).ID, param.prefix_data{2}))];
+    files2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix_data{1}));
+    files2process = [files2process; dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix_data{2}))];
 
     % provide update 
     fprintf('subject %d - %d datasets found in the input directory\n', subject_idx, length(files2process))
@@ -2301,7 +2254,7 @@ for subject_idx = 1:length(NLEP_info.single_subject)
     end
 
     % save output figure
-    saveas(fig, sprintf('%s\\figures\\RS_aperiodic_%s.png', folder.output, NLEP_info.single_subject(subject_idx).ID))
+    saveas(fig, sprintf('%s\\figures\\RS_aperiodic_%s.png', folder.output, AP_info.single_subject(subject_idx).ID))
     
     % update figure counter
     figure_counter = figure_counter + 1;
@@ -2309,7 +2262,7 @@ end
 save(output_file, 'NLEP_data', 'NLEP_measures', '-append');
 
 % select relax and ready datasets
-for subject_idx = 1:length(NLEP_info.single_subject)
+for subject_idx = 1:length(AP_info.single_subject)
     for c = 1:length(NLEP_measures(subject_idx).LEP_ST.conditions)
         % extract condition
         condition = NLEP_measures(subject_idx).LEP_ST.conditions{c};
@@ -2407,7 +2360,7 @@ study = 'NLEP';
 output_file = sprintf('%s\\%s_output.mat', folder.output, study);
 cd(folder.output)
 % load(output_file, 'NLEP_info', 'NLEP_measures', 'NLEP_data');
-load(output_file, 'NLEP_info', 'NLEP_measures', 'NLEP_data', 'slopes')
+load(output_file, 'AP_info', 'NLEP_measures', 'NLEP_data', 'slopes')
 
 % check if the output tables already exists
 output_variables = who('-file', output_file);
@@ -2433,7 +2386,7 @@ load('dataset_default.lw6', '-mat')
 % put measured variables in a long-format output table
 fprintf('exporting LEP peak measures to a table ...\n')
 row_counter = height(NLEP_table4stats) + 1;
-for a = 1:length(NLEP_info.single_subject)
+for a = 1:length(AP_info.single_subject)
     % determine contrast = subgroup  
     if contains(NLEP_data.LEP(a).conditions{1}, 'hand') && contains(NLEP_data.LEP(a).conditions{2}, 'hand')
         contrast = 1;
@@ -2458,18 +2411,18 @@ for a = 1:length(NLEP_info.single_subject)
                 for e = find(NLEP_data.LEP(a).blocks{b} == c)
                     % subject 
                     NLEP_table4stats.subject(row_counter) = a;
-                    NLEP_table4stats.ID{row_counter} = NLEP_info.single_subject(a).ID;
+                    NLEP_table4stats.ID{row_counter} = AP_info.single_subject(a).ID;
                     NLEP_table4stats.contrast(row_counter) = contrast;
-                    NLEP_table4stats.age(row_counter) = NLEP_info.single_subject(a).age;
-                    NLEP_table4stats.male(row_counter) = NLEP_info.single_subject(a).male;
-                    NLEP_table4stats.handedness(row_counter) = NLEP_info.single_subject(a).handedness; 
-                    if isempty(NLEP_info.single_subject(a).body) 
+                    NLEP_table4stats.age(row_counter) = AP_info.single_subject(a).age;
+                    NLEP_table4stats.male(row_counter) = AP_info.single_subject(a).male;
+                    NLEP_table4stats.handedness(row_counter) = AP_info.single_subject(a).handedness; 
+                    if isempty(AP_info.single_subject(a).body) 
                         NLEP_table4stats.height(row_counter) = NaN;
                         NLEP_table4stats.weight(row_counter) = NaN;
                         NLEP_table4stats.limb_length(row_counter) = NaN;
                     else
-                        NLEP_table4stats.height(row_counter) = NLEP_info.single_subject(a).body.height;
-                        NLEP_table4stats.weight(row_counter) = NLEP_info.single_subject(a).body.weight;
+                        NLEP_table4stats.height(row_counter) = AP_info.single_subject(a).body.height;
+                        NLEP_table4stats.weight(row_counter) = AP_info.single_subject(a).body.weight;
                         if contains(NLEP_measures(a).LEP_avg.conditions{b}, 'hand')
                             statement = sprintf('NLEP_table4stats.limb_length(row_counter) = NLEP_info.single_subject(a).body.arm_%s;', NLEP_data.LEP(a).conditions{b}(6:end));
                             eval(statement)
@@ -2478,7 +2431,7 @@ for a = 1:length(NLEP_info.single_subject)
                             eval(statement)
                         end
                     end
-                    if ismember('LEP', fieldnames(NLEP_info.single_subject(a).temperature))
+                    if ismember('LEP', fieldnames(AP_info.single_subject(a).temperature))
                         statement = sprintf('NLEP_table4stats.temperature(row_counter) = NLEP_info.single_subject(a).temperature.LEP.%s_b%d;', replace(NLEP_measures(a).LEP_avg.conditions{b}, ' ', '_'), c);
                         eval(statement)
                     else
@@ -2558,7 +2511,7 @@ save(output_file, 'NLEP_table4stats', '-append');
 %  add
 fprintf('exporting LEP peak measures to a table ...\n')
 row_counter = height(NLEP_table4stats) + 1;
-for a = 1:length(NLEP_info.single_subject)
+for a = 1:length(AP_info.single_subject)
     % determine contrast = subgroup  
     if contains(NLEP_data.LEP(a).conditions{1}, 'hand') && contains(NLEP_data.LEP(a).conditions{2}, 'hand')
         contrast = 1;
@@ -2583,18 +2536,18 @@ for a = 1:length(NLEP_info.single_subject)
                 for e = find(NLEP_data.LEP(a).blocks{b} == c)
                     % subject 
                     NLEP_table4stats.subject(row_counter) = a;
-                    NLEP_table4stats.ID{row_counter} = NLEP_info.single_subject(a).ID;
+                    NLEP_table4stats.ID{row_counter} = AP_info.single_subject(a).ID;
                     NLEP_table4stats.contrast(row_counter) = contrast;
-                    NLEP_table4stats.age(row_counter) = NLEP_info.single_subject(a).age;
-                    NLEP_table4stats.male(row_counter) = NLEP_info.single_subject(a).male;
-                    NLEP_table4stats.handedness(row_counter) = NLEP_info.single_subject(a).handedness; 
-                    if isempty(NLEP_info.single_subject(a).body) 
+                    NLEP_table4stats.age(row_counter) = AP_info.single_subject(a).age;
+                    NLEP_table4stats.male(row_counter) = AP_info.single_subject(a).male;
+                    NLEP_table4stats.handedness(row_counter) = AP_info.single_subject(a).handedness; 
+                    if isempty(AP_info.single_subject(a).body) 
                         NLEP_table4stats.height(row_counter) = NaN;
                         NLEP_table4stats.weight(row_counter) = NaN;
                         NLEP_table4stats.limb_length(row_counter) = NaN;
                     else
-                        NLEP_table4stats.height(row_counter) = NLEP_info.single_subject(a).body.height;
-                        NLEP_table4stats.weight(row_counter) = NLEP_info.single_subject(a).body.weight;
+                        NLEP_table4stats.height(row_counter) = AP_info.single_subject(a).body.height;
+                        NLEP_table4stats.weight(row_counter) = AP_info.single_subject(a).body.weight;
                         if contains(NLEP_measures(a).LEP_avg.conditions{b}, 'hand')
                             statement = sprintf('NLEP_table4stats.limb_length(row_counter) = NLEP_info.single_subject(a).body.arm_%s;', NLEP_data.LEP(a).conditions{b}(6:end));
                             eval(statement)
@@ -2603,7 +2556,7 @@ for a = 1:length(NLEP_info.single_subject)
                             eval(statement)
                         end
                     end
-                    if ismember('LEP', fieldnames(NLEP_info.single_subject(a).temperature))
+                    if ismember('LEP', fieldnames(AP_info.single_subject(a).temperature))
                         statement = sprintf('NLEP_table4stats.temperature(row_counter) = NLEP_info.single_subject(a).temperature.LEP.%s_b%d;', replace(NLEP_measures(a).LEP_avg.conditions{b}, ' ', '_'), c);
                         eval(statement)
                     else
@@ -2686,7 +2639,7 @@ writetable(NLEP_table4stats, 'NLEP_LEP_measures.csv');
 % transform average EEG signals into a table
 row_counter = height(NLEP_table4data) + 1;
 fprintf('exporting average LEP signals: ')
-for a = 1:length(NLEP_info.single_subject)
+for a = 1:length(AP_info.single_subject)
     % update
     fprintf('%d .. ', a)
 
@@ -2726,7 +2679,7 @@ for a = 1:length(NLEP_info.single_subject)
                 for e = 1:length(param.processing)
                     % subject info
                     NLEP_table4data.subject(row_counter) = a;
-                    NLEP_table4data.ID{row_counter} = NLEP_info.single_subject(a).ID;
+                    NLEP_table4data.ID{row_counter} = AP_info.single_subject(a).ID;
                     NLEP_table4data.contrast(row_counter) = contrast;
 
                     % dataset info
@@ -2761,7 +2714,7 @@ writetable(NLEP_table4data, 'NLEP_LEP_data.csv');
 param.processing{1} = 'raw';
 row_counter = height(NLEP_table4topo) + 1;
 fprintf('exporting average LEP peak topographies: ')
-for a = 1:length(NLEP_info.single_subject)
+for a = 1:length(AP_info.single_subject)
     % update
     fprintf('%d .. ', a)
 
@@ -2801,7 +2754,7 @@ for a = 1:length(NLEP_info.single_subject)
                 for e = 1:length(param.processing)
                     % subject info
                     NLEP_table4topo.subject(row_counter) = a;
-                    NLEP_table4topo.ID{row_counter} = NLEP_info.single_subject(a).ID;
+                    NLEP_table4topo.ID{row_counter} = AP_info.single_subject(a).ID;
                     NLEP_table4topo.contrast(row_counter) = contrast;
 
                     % dataset info
@@ -2875,7 +2828,7 @@ figure_counter = 1;
 % ------------------------- 
 
 % update output variables
-load(output_file, 'NLEP_info', 'NLEP_data', 'NLEP_measures', 'data_area');
+load(output_file, 'AP_info', 'NLEP_data', 'NLEP_measures', 'data_area');
 
 % load default header
 load('dataset_default.lw6', '-mat')
@@ -2886,7 +2839,7 @@ addpath(genpath([folder.toolbox '\letswave 6']));
 % --- plot mean N1 and N2P2 signal from the hand area ---
 % load hand data
 data_N1 = []; data_N2P2 = [];
-for subject_idx = 1:length(NLEP_info.single_subject)
+for subject_idx = 1:length(AP_info.single_subject)
     for c = 1:length(NLEP_data.LEP(subject_idx).conditions)
         if contains(NLEP_data.LEP(subject_idx).conditions{c}, 'hand')
             data_N1(end+1, :) = NLEP_data.LEP(subject_idx).unfiltered.N1.average_cond(c).mean;  
@@ -3015,13 +2968,13 @@ for d = 1:length(dataset)
 
     % encode
     if d == 1
-        NLEP_info.group_analysis.preliminary(4).process = sprintf('4 - GFP peak localization');
+        AP_info.group_analysis.preliminary(4).process = sprintf('4 - GFP peak localization');
         for a = 1:length(data_area)
-            NLEP_info.group_analysis.preliminary(4).params.datasets{a} = data_area(a).condition;
+            AP_info.group_analysis.preliminary(4).params.datasets{a} = data_area(a).condition;
         end
-        NLEP_info.group_analysis.preliminary(4).params.labels = labels;
-        NLEP_info.group_analysis.preliminary(4).params.flip_idx = electrode_idx_flipped;
-        NLEP_info.group_analysis.preliminary(4).date = sprintf('%s', date);
+        AP_info.group_analysis.preliminary(4).params.labels = labels;
+        AP_info.group_analysis.preliminary(4).params.flip_idx = electrode_idx_flipped;
+        AP_info.group_analysis.preliminary(4).date = sprintf('%s', date);
     end
 
     % append to the right datset
@@ -3100,7 +3053,7 @@ for a = 1:length(data_area)
 end
 
 % identify EOI
-eoi = find(strcmp(NLEP_info.group_analysis.preliminary(4).params.labels, param.EOI));
+eoi = find(strcmp(AP_info.group_analysis.preliminary(4).params.labels, param.EOI));
 
 % plot average ERPs
 for a = 1:length(param.response)
@@ -3188,7 +3141,7 @@ values_contrast.N1.ICA_filtered.foot_foot.right.amplitude = []; values_contrast.
 values_contrast.N1.ICA_filtered.foot_foot.right.latency = []; values_contrast.N1.ICA_filtered.foot_foot.left.latency = [];
 values_contrast.N1.ICA_filtered.hand_foot.hand.amplitude = []; values_contrast.N1.ICA_filtered.hand_foot.foot.amplitude = [];
 values_contrast.N1.ICA_filtered.hand_foot.hand.latency = []; values_contrast.N1.ICA_filtered.hand_foot.foot.latency = [];
-for s = 1:length(NLEP_info.single_subject)
+for s = 1:length(AP_info.single_subject)
     % identify contrast and condition
     for c = 1:length(LEP_average(s).conditions)
         if contains(LEP_average(s).conditions{c}, 'hand')
@@ -3366,9 +3319,9 @@ for c = 1:length(param.contrast)
 end
 
 % get some averages
-mean([NLEP_info.single_subject.age])
-std([NLEP_info.single_subject.age])
-sum([NLEP_info.single_subject.male])
+mean([AP_info.single_subject.age])
+std([AP_info.single_subject.age])
+sum([AP_info.single_subject.male])
 mean(LEP_stats.hand_hand.N1.ICA_filtered.amplitude.mean)
 mean(LEP_stats.hand_hand.N1.ICA_filtered.amplitude.SD)
 mean(LEP_stats.hand_hand.N1.ICA_filtered.latency.mean)
@@ -3458,7 +3411,7 @@ for b = {'unfiltered' 'CWT_filtered'}
     end
 end
 NLEP_data_1to35.LEP(a).blocks{str2double(regexp(dataset, '\d+', 'match', 'once'))}(trial) = [];
-save(input_file, 'NLEP_info', 'NLEP_data_1to35', '-append')
+save(input_file, 'AP_info', 'NLEP_data_1to35', '-append')
 
 % remove specific measures
 s = 17; 
@@ -3483,14 +3436,14 @@ letswave
 
 %% helper lines
 % update NLEP_info
-NLEP_info_Domi = NLEP_info;
-load(output_file, 'NLEP_info');
+NLEP_info_Domi = AP_info;
+load(output_file, 'AP_info');
 for i = [33,34,35]
-    NLEP_info_Domi.single_subject(i).preprocessing = NLEP_info.single_subject(i).preprocessing;
+    NLEP_info_Domi.single_subject(i).preprocessing = AP_info.single_subject(i).preprocessing;
 end
-NLEP_info = NLEP_info_Domi;
-save('NLEP_info_backup.mat', 'NLEP_info');
-save(output_file, 'NLEP_info', '-append');
+AP_info = NLEP_info_Domi;
+save('NLEP_info_backup.mat', 'AP_info');
+save(output_file, 'AP_info', '-append');
 clear i NLEP_info_Domi
 
 % load again the 'dataset' variable
@@ -3531,49 +3484,49 @@ end
 clear d e header
 
 % re-organize output structure
-for s = 1:length(NLEP_info.single_subject)-1
+for s = 1:length(AP_info.single_subject)-1
     % channel interpolation
-    interp = NLEP_info.single_subject(s).preprocessing.ERP(4).process; 
-    NLEP_info.single_subject(s).preprocessing.ERP(4).process = interp(1:25);
-    NLEP_info.single_subject(s).preprocessing.ERP(4).params.interpolated = interp(28:end);
-    NLEP_info.single_subject(s).preprocessing.ERP(4).params.sources = interp(28:end);
+    interp = AP_info.single_subject(s).preprocessing.ERP(4).process; 
+    AP_info.single_subject(s).preprocessing.ERP(4).process = interp(1:25);
+    AP_info.single_subject(s).preprocessing.ERP(4).params.interpolated = interp(28:end);
+    AP_info.single_subject(s).preprocessing.ERP(4).params.sources = interp(28:end);
 
     % removed epochs
     stim = {'LEP' 'SEP'};
     block = {'b1' 'b2'};
-    epochs = NLEP_info.single_subject(s).preprocessing.ERP(5).process;
+    epochs = AP_info.single_subject(s).preprocessing.ERP(5).process;
     for t = 1:2
         for c = 1:2
-            cond = sprintf('%s', replace(NLEP_info.single_subject(s).condition{c}, '_', ' '));
+            cond = sprintf('%s', replace(AP_info.single_subject(s).condition{c}, '_', ' '));
             for b = 1:2
-                NLEP_info.single_subject(s).preprocessing.ERP(5).params(end+1).dataset = sprintf('%s %s %s', stim{t}, cond, block{b});        
+                AP_info.single_subject(s).preprocessing.ERP(5).params(end+1).dataset = sprintf('%s %s %s', stim{t}, cond, block{b});        
             end
         end
     end
-    NLEP_info.single_subject(s).preprocessing.ERP(5).params(1).discarded = epochs(23:end);
+    AP_info.single_subject(s).preprocessing.ERP(5).params(1).discarded = epochs(23:end);
 
     % ICA
-    NLEP_info.single_subject(s).preprocessing.ERP(6).process = '6 - ICA';
-    NLEP_info.single_subject(s).preprocessing.ERP(6).params = NLEP_info.single_subject(s).preprocessing.ICA;
-    NLEP_info.single_subject(s).preprocessing = rmfield(NLEP_info.single_subject(s).preprocessing, 'ICA');
+    AP_info.single_subject(s).preprocessing.ERP(6).process = '6 - ICA';
+    AP_info.single_subject(s).preprocessing.ERP(6).params = AP_info.single_subject(s).preprocessing.ICA;
+    AP_info.single_subject(s).preprocessing = rmfield(AP_info.single_subject(s).preprocessing, 'ICA');
 
     % order the structure
-    NLEP_info.single_subject(s).preprocessing.ERP = orderfields(NLEP_info.single_subject(s).preprocessing.ERP, {'process' 'params' 'date'}); 
-    save(output_file, 'NLEP_info', '-append');
+    AP_info.single_subject(s).preprocessing.ERP = orderfields(AP_info.single_subject(s).preprocessing.ERP, {'process' 'params' 'date'}); 
+    save(output_file, 'AP_info', '-append');
 end
 clear s t c b interp stim block cond epochs 
-NLEP_info.single_subject = orderfields(NLEP_info.single_subject, {'ID' 'date' 'age' 'male' 'handedness' 'body' 'QST' 'condition' 'temperature' 'ES' 'dataset' 'preprocessing' 'LEP'}); 
+AP_info.single_subject = orderfields(AP_info.single_subject, {'ID' 'date' 'age' 'male' 'handedness' 'body' 'QST' 'condition' 'temperature' 'ES' 'dataset' 'preprocessing' 'LEP'}); 
 NLEP_measures = orderfields(NLEP_measures, {'ID' 'conditions' 'BDI' 'PCS' 'SES' 'RT' 'pain'}); 
 
 % quick means
-mean([NLEP_info.single_subject.age])
+mean([AP_info.single_subject.age])
 epochs = 0;
-for a = 1:length(NLEP_info.single_subject)
+for a = 1:length(AP_info.single_subject)
     for b = 1:8
-        epochs = epochs + numel(NLEP_info.single_subject(a).preprocessing.ERP(5).params(b).discarded);
+        epochs = epochs + numel(AP_info.single_subject(a).preprocessing.ERP(5).params(b).discarded);
     end
 end
-epochs/(length(NLEP_info.single_subject) * 8)
+epochs/(length(AP_info.single_subject) * 8)
 clear a b epochs
 
 % next subject loop
