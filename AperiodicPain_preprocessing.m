@@ -232,8 +232,8 @@ clear prompt dlgtitle dims definput
 % fill in the metadata structure
 AP_info(subject_idx).temperature.right_block1 = session_info{1};
 AP_info(subject_idx).temperature.right_block2 = session_info{2};
-AP_info(subject_idx).temperature.left_block1 = session_info{1};
-AP_info(subject_idx).temperature.left_block2 = session_info{2};
+AP_info(subject_idx).temperature.left_block1 = session_info{3};
+AP_info(subject_idx).temperature.left_block2 = session_info{4};
 clear session_info 
 
 % save to the output file
@@ -246,7 +246,8 @@ params.data = {'RS', 'LEP', 'SEP', 'VEP'};
 params.folder = 'EEG';
 params.data_n = [4, 4, 4, 2];
 params.crop_margin = 5;
-params.downsample = 20;
+params.downsample = 5;
+params.suffix = {'crop' 'ds' 'dc'};
 % -------------------------
 fprintf('section 2: import & pre-process continuous EEG data\n')
 
@@ -357,7 +358,7 @@ addpath(genpath([folder.toolbox '\letswave 7']));
 fprintf('pre-processing:\n')
 for d = 1:length(dataset.raw)
     % provide update
-    fprintf('--> dataset: %s\n', AP_info(subject_idx).dataset(d).data)
+    fprintf('%d. dataset: %s\n', d, AP_info(subject_idx).dataset(d).data)
 
     % select data
     lwdata.header = dataset.raw(d).header;
@@ -369,36 +370,24 @@ for d = 1:length(dataset.raw)
         'suffix', '', 'is_save', 0);
     lwdata = FLW_electrode_location_assign.get_lwdata(lwdata, option);
     if d == 1
-        AP_info(subject_idx).prepocessing(1).process = 'electrode coordinates assigned';
-        AP_info(subject_idx).prepocessing(1).params.layout = 'standard 10-20-cap81';
-        AP_info(subject_idx).prepocessing(1).suffix = [];
-        AP_info(subject_idx).prepocessing(1).date = sprintf('%s', date);
+        AP_info(subject_idx).preprocessing(1).process = 'electrode coordinates assigned';
+        AP_info(subject_idx).preprocessing(1).params.layout = 'standard 10-20-cap81';
+        AP_info(subject_idx).preprocessing(1).suffix = [];
+        AP_info(subject_idx).preprocessing(1).date = sprintf('%s', date);
     end
 
     % select events to keep
     fprintf('checking events...\n')
-    event_idx = logical([]);
-    for e = 1:length(lwdata.header.events)
-        if isempty(str2num(lwdata.header.events(a).code))
-            event_idx(e) = true;
-        else
-            event_idx(e) = false;
-        end
-    end
-    lwdata.header.events(event_idx) = [];
-    events = unique({lwdata.header.events.code}); 
-    if ~isempty(events)
+    if ~isempty(lwdata.header.events)
+        events = unique({lwdata.header.events.code}); 
     else
         error('ERROR: no events/triggers found in the recording!')
-    end    
-
-    % select events to keep
+    end
     [selection, ok] = listdlg( ...
         'PromptString', 'Select the events to KEEP:', ...
         'SelectionMode', 'multiple', ...
         'ListString', events, ...
-        'InitialValue', 1:numel(events));  
-    
+        'InitialValue', 1:numel(events));      
     if ok
         events = events(selection);
         fprintf('keeping following event codes: ');
@@ -414,91 +403,149 @@ for d = 1:length(dataset.raw)
         fprintf('\n')
     end
 
-
-    
+    % remove all other events, count and encode
     event_idx = logical([]);
-    for a = 1:length(lwdata.header.events)
-        if isempty(str2num(lwdata.header.events(a).code))
-            event_idx(a) = true;
-        else
-            event_idx(a) = false;
-        end
-    end
-    lwdata.header.events(event_idx) = [];
-    params.eventcodes = unique({lwdata.header.events.code});
-    if length(params.eventcodes) == length(AP_info(subject_idx).EEG.triggers)
-        event_count = zeros(length(AP_info(subject_idx).EEG.triggers), 1);
-        for e = 1:length(lwdata.header.events)
-            for a = 1:length(AP_info(subject_idx).EEG.triggers)
-                if strcmp(lwdata.header.events(e).code, num2str(AP_info(subject_idx).EEG.triggers(a).trigger))
-                    lwdata.header.events(e).code = AP_info(subject_idx).EEG.triggers(a).label{1};
-                    event_count(a) = event_count(a) + 1;
+    event_cnt = zeros(1, length(events));
+    for e = 1:length(lwdata.header.events)
+        if ismember(lwdata.header.events(e).code, events)
+            event_idx(e) = true;
+            for f = 1:length(events)
+                if strcmp(lwdata.header.events(e).code, events{f})
+                    event_cnt(f) = event_cnt(f) + 1;
                 end
             end
+        else
+            event_idx(e) = false;
         end
-    else
-        error('ERROR: wrong number of triggers (%d) was found in the dataset!', length(params.eventcodes))
     end
-    
-    % update & encode
-    fprintf('%d events in total were found in the dataset:\n%s - %d events\n%s - %d events\n%s - %d events\n%s - %d events\n', ...
-        length(lwdata.header.events), ...
-        AP_info(subject_idx).EEG.triggers(1).label{1}, event_count(1), ...
-        AP_info(subject_idx).EEG.triggers(2).label{1}, event_count(2), ...
-        AP_info(subject_idx).EEG.triggers(3).label{1}, event_count(3), ...
-        AP_info(subject_idx).EEG.triggers(4).label{1}, event_count(4));
-    AP_info(subject_idx).EEG.dataset(d).trials = event_count(1);
+    lwdata.header.events = lwdata.header.events(event_idx);
+    if d == 1
+        AP_info(subject_idx).preprocessing(2).process = 'EEG elvents identified';
+        AP_info(subject_idx).preprocessing(2).suffix = [];
+        AP_info(subject_idx).preprocessing(2).date = sprintf('%s', date);
+    end
+    AP_info(subject_idx).preprocessing(2).params(d).data = AP_info(subject_idx).dataset(d).data;
+    AP_info(subject_idx).preprocessing(2).params(d).eventcodes = events;
+    AP_info(subject_idx).preprocessing(2).params(d).eventcounts = event_cnt;
+    for e = 1:length(events)
+        fprintf('--> %d event(s) labeled ''%s'' identified.\n', event_cnt(e), events{e})
+    end
 
-    % crop data
-    params.crop(1) = lwdata.header.events(1).latency - params.crop_margin;
-    params.crop(2) = lwdata.header.events(end).latency + params.crop_margin;
-    fprintf('cropping ...\n')
+    % crop around events
+    fprintf('cropping around events...\n')
+    if lwdata.header.events(1).latency - params.crop_margin > 0
+        params.crop(1) = lwdata.header.events(1).latency - params.crop_margin;
+    else
+        params.crop(1) = 0;
+    end
+    if length(events) == 1 & event_cnt(1) == 1
+        params.crop(2) = floor(lwdata.header.datasize(6) * lwdata.header.xstep); 
+    else
+        params.crop(2) = lwdata.header.events(end).latency + params.crop_margin;
+    end    
     option = struct('xcrop_chk', 1, 'xstart', params.crop(1), 'xend', params.crop(2), ...
         'suffix', params.suffix{1}, 'is_save', 0);
     lwdata = FLW_crop_epochs.get_lwdata(lwdata, option);
     if d == 1
-        AP_info(subject_idx).EEG.processing(2).process = 'continuous data cropped';
-        AP_info(subject_idx).EEG.processing(2).params.start = params.crop(1);
-        AP_info(subject_idx).EEG.processing(2).params.end = params.crop(2);
-        AP_info(subject_idx).EEG.processing(2).params.margin = params.crop_margin;
-        AP_info(subject_idx).EEG.processing(2).suffix = params.suffix{1};
-        AP_info(subject_idx).EEG.processing(2).date = sprintf('%s', date);
+        AP_info(subject_idx).preprocessing(3).process = 'continuous data cropped';
+        AP_info(subject_idx).preprocessing(3).suffix = params.suffix{1};
+        AP_info(subject_idx).preprocessing(3).date = sprintf('%s', date);
     end
+    AP_info(subject_idx).preprocessing(3).params(d).data = AP_info(subject_idx).dataset(d).data;
+    AP_info(subject_idx).preprocessing(3).params(d).start = params.crop(1);
+    AP_info(subject_idx).preprocessing(3).params(d).end = params.crop(2);
 
     % downsample 
     fprintf('downsampling...\n')
     option = struct('x_dsratio', params.downsample, 'suffix', params.suffix{2}, 'is_save', 0);
     lwdata = FLW_downsample.get_lwdata(lwdata, option);
     if d == 1
-        AP_info(subject_idx).EEG.processing(3).process = sprintf('downsampled');
-        AP_info(subject_idx).EEG.processing(3).params.ratio = params.downsample;
-        AP_info(subject_idx).EEG.processing(3).params.fs_orig = 1/lwdata.header.xstep * params.downsample;
-        AP_info(subject_idx).EEG.processing(3).params.fs_final = 1/lwdata.header.xstep;
-        AP_info(subject_idx).EEG.processing(3).suffix = params.suffix{2};
-        AP_info(subject_idx).EEG.processing(3).date = sprintf('%s', date);
+        AP_info(subject_idx).preprocessing(4).process = sprintf('downsampled');
+        AP_info(subject_idx).preprocessing(4).params.ratio = params.downsample;
+        AP_info(subject_idx).preprocessing(4).params.fs_original = 1/lwdata.header.xstep * params.downsample;
+        AP_info(subject_idx).preprocessing(4).params.fs_final = 1/lwdata.header.xstep;
+        AP_info(subject_idx).preprocessing(4).suffix = params.suffix{2};
+        AP_info(subject_idx).preprocessing(4).date = sprintf('%s', date);
     end
 
-    % remove DC + linear detrend continuous data, save for letswave
-    fprintf('removing DC and applying linear detrend...\n')
+    % remove DC + linear detrend, save for letswave
+    fprintf('removing DC and applying linear detrend...\nsaving for letswave...\n')
     option = struct('linear_detrend', 1, 'suffix', params.suffix{3}, 'is_save', 1);
     lwdata = FLW_dc_removal.get_lwdata(lwdata, option);
     if d == 1
-        AP_info(subject_idx).EEG.processing(4).process = sprintf('DC + linear detrend on continuous data');
-        AP_info(subject_idx).EEG.processing(4).suffix = params.suffix{3};
-        AP_info(subject_idx).EEG.processing(4).date = sprintf('%s', date);
+        AP_info(subject_idx).preprocessing(5).process = sprintf('DC + linear detrend on continuous data');
+        AP_info(subject_idx).preprocessing(5).suffix = params.suffix{3};
+        AP_info(subject_idx).preprocessing(5).date = sprintf('%s', date);
     end
-    fprintf('\n')
+    if d == length(dataset.raw)
+        fprintf('done.\n')
+    else
+        fprintf('\n')
+    end
 
     % update dataset
     dataset.raw(d).header = lwdata.header;
     dataset.raw(d).data = lwdata.data; 
 end
-fprintf('done.\n')
 
 % save info structure and move on
 save(output_file, 'AP_info', '-append');
-clear a b c d e file2import file2rmv filename dataname datanames block blocks blocks_rep blocks_sorted breaks underscores
+clear a b c d e f file2import file2rmv filename dataname datanames block blocks blocks_rep blocks_sorted breaks underscores ...
+    lwdata option events selection ok event_idx event_cnt
 fprintf('section 2 finished.\n\n')
+
+%% 3) pre-process stimulation data
+% ----- section input -----
+params.prefix = 'dc ds crop';
+params.data = {'laser', 'electric', 'visual'};
+params.triggers = {'L  1', 'E  1', 'V  1'};
+params.bandpass = [0.1 80];
+params.notch = 50;
+params.epoch.long = [-1.5, 1.5];
+params.epoch.ERP = [-0.3, 1];
+params.epoch.prestim = [-1, 0];
+params.suffix = {'bandpass' 'notch'};
+% ------------------------- 
+fprintf('section 3: pre-process stimulation data\n')
+
+% re-load dataset if needed, remove RS data
+if exist('dataset') ~= 1
+    fprintf('loading dataset...\n')
+    data2load = dir(sprintf('%s*%s*', params.prefix, AP_info(subject_idx).ID));
+    dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'raw');
+    clear data2load
+end
+fprintf('removing RS data...\n')
+data_idx = logical([]);
+for a = 1:length(dataset.raw)
+    if contains(dataset.raw(a).name, 'RS') 
+        data_idx(a) = true;
+    else
+        data_idx(a) = false;
+    end
+end
+dataset.raw(data_idx) = [];
+fprintf('done.\n')
+
+% apply frequency filters
+for a = 1:length(dataset.raw)
+end
+
+% visual check + adjust triggers if necessary
+addpath(genpath([folder.toolbox '\letswave 7']));
+letswave
+
+% interpolate bad channels if necessary
+% segment into long epochs
+% remove bad epochs
+% compute ICA matrix 
+% encode ICA
+% split intp short ERP and pre-stimulus epochs
+
+% save info structure and move on
+save(output_file, 'AP_info', '-append');
+clear a b
+fprintf('section 3 finished.\n\n')
 
 %% 3) pre-processing block 1 
 % ----- section input -----
@@ -3711,6 +3758,50 @@ while next_subject
 end
 
 %% functions
+function dataset = reload_dataset(ID, data2load, fieldname)
+% =========================================================================
+% reloads pre-processed EEG data of a single subject for following 
+% processing steps 
+% input:    - ID = subject identifier
+%           - data2load = list of datasets to load
+%           - fieldname
+% =========================================================================  
+% initiate output
+dataset = struct;
+
+% sort datasets
+header_idx = logical([]);
+data_idx = logical([]);
+for d = 1:length(data2load)
+    if contains(data2load(d).name, 'lw6') 
+        header_idx(d) = true;
+        data_idx(d) = false;
+    elseif contains(data2load(d).name, 'mat') 
+        header_idx(d) = false;
+        data_idx(d) = true;
+    end
+end
+headers = data2load(header_idx);
+datas = data2load(data_idx);
+
+% load 
+if length(datas) == length(headers) 
+    for d = 1:length(datas)
+        % header
+        load(sprintf('%s\\%s', headers(d).folder, headers(d).name), '-mat')
+        dataname = regexp(header.name, [ID '\s*(.*)'], 'tokens');
+        dataname = dataname{1}{1};
+        dataset.(fieldname)(d).name = dataname;
+        dataset.(fieldname)(d).header = header; 
+
+        % data
+        load(sprintf('%s\\%s', datas(d).folder, datas(d).name))
+        dataset.(fieldname)(d).data = data;
+    end
+else
+    error('ERROR: Wrong number of available datasets to load! Check manually.')
+end
+end
 function select_EEG(data_name, time_vector, data_visual, s, duration, trigpos, varargin)
     % check for colours
     if ~isempty(varargin)
