@@ -477,15 +477,15 @@ for d = 1:length(dataset.raw)
         AP_info(subject_idx).preprocessing(5).suffix = params.suffix{3};
         AP_info(subject_idx).preprocessing(5).date = sprintf('%s', date);
     end
+
+    % update dataset
+    dataset.raw(d).header = lwdata.header;
+    dataset.raw(d).data = lwdata.data; 
     if d == length(dataset.raw)
         fprintf('done.\n')
     else
         fprintf('\n')
     end
-
-    % update dataset
-    dataset.raw(d).header = lwdata.header;
-    dataset.raw(d).data = lwdata.data; 
 end
 
 % save info structure and move on
@@ -527,8 +527,56 @@ end
 dataset.raw(data_idx) = [];
 fprintf('done.\n')
 
+% add letswave 7 to the top of search path
+addpath(genpath([folder.toolbox '\letswave 7']));
+
 % apply frequency filters
-for a = 1:length(dataset.raw)
+%!make sure the notch filter code is fixed
+for b = 1:length(dataset.raw)
+    % provide update
+    fprintf('%d. dataset: %s\n', b, dataset.raw(b).name)
+
+    % select data
+    lwdata.header = dataset.raw(b).header;
+    lwdata.data = dataset.raw(b).data; 
+
+    % bandpass filter
+    fprintf('applying Butterworth bandpass filter...\n')
+    option = struct('filter_type', 'bandpass', 'high_cutoff', params.bandpass(2),'low_cutoff', params.bandpass(1),...
+        'filter_order', 4, 'suffix', params.suffix{1}, 'is_save', 0);
+    lwdata = FLW_butterworth_filter.get_lwdata(lwdata, option);
+    if b == 1
+        AP_info(subject_idx).preprocessing(6).process = 'bandpass filtered';
+        AP_info(subject_idx).preprocessing(6).params.filter = 'Butterworth';
+        AP_info(subject_idx).preprocessing(6).params.order = 4;
+        AP_info(subject_idx).preprocessing(6).params.limits = [params.bandpass(1), params.bandpass(2)];
+        AP_info(subject_idx).preprocessing(6).suffix = params.suffix{1};
+        AP_info(subject_idx).preprocessing(6).date = sprintf('%s', date);
+    end
+
+    % notch filter
+    fprintf('applying FFT notch filter...\n')
+    option = struct('filter_type', 'notch', 'notch_fre', params.notch, 'notch_width', 2, 'slope_width', 2,...
+        'harmonic_num', 2,'suffix', params.suffix{2},'is_save', 0);
+    lwdata = FLW_FFT_filter.get_lwdata(lwdata, option);
+    if b == 1
+        AP_info(subject_idx).preprocessing(7).process = 'notch filtered';
+        AP_info(subject_idx).preprocessing(7).params.filter = 'FFT';
+        AP_info(subject_idx).preprocessing(7).params.width = 2;
+        AP_info(subject_idx).preprocessing(7).params.slope = 2;
+        AP_info(subject_idx).preprocessing(7).suffix = params.suffix{2};
+        AP_info(subject_idx).preprocessing(7).date = sprintf('%s', date);
+    end
+
+    % update dataset
+    dataset.preprocessed(b).name = dataset.raw(b).name;
+    dataset.preprocessed(b).header = lwdata.header;
+    dataset.preprocessed(b).data = lwdata.data; 
+    if b == length(dataset.raw)
+        fprintf('done.\n')
+    else
+        fprintf('\n')
+    end
 end
 
 % visual check + adjust triggers if necessary
