@@ -168,7 +168,7 @@ params.electrical.target = 'median nerve';
 params.visual.stimulus = 'checkerboard 1°';
 params.visual.duration = 200;
 % -------------------------
-fprintf('section 1: fill in subject & session info\n')
+fprintf('section 1: fill in subject & session info\n\n')
 
 % get subject & session info
 prompt = {'date:', 'subject:', 'age (years):', 'male:', 'handedness score:', ...
@@ -249,7 +249,7 @@ params.crop_margin = 5;
 params.downsample = 5;
 params.suffix = {'crop' 'ds' 'dc'};
 % -------------------------
-fprintf('section 2: import & pre-process continuous EEG data\n')
+fprintf('section 2: import & pre-process continuous EEG data\n\n')
 
 % add letswave 6 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 6']));
@@ -289,7 +289,7 @@ for a = 1:length(params.data)
         elseif contains(dataname, 'SEP')
             dataname = replace(dataname, 'SEP', 'electric');
         elseif contains(dataname, 'VEP')
-            dataname = replace(dataname, 'SEP', 'visual');
+            dataname = replace(dataname, 'VEP', 'visual');
         end
         datanames{b} = dataname;
 
@@ -349,7 +349,7 @@ for a = 1:length(params.data)
         dataset.raw(blocks(c) - 1).header.name = datanames{c};
     end
 end
-fprintf('done.\n%d datasets imported.\n', length(dataset.raw))
+fprintf('done.\n%d datasets imported.\n\n', length(dataset.raw))
 
 % add letswave 7 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 7']));
@@ -396,7 +396,7 @@ for d = 1:length(dataset.raw)
         end
         fprintf('\n')
     else
-        fprintf('user cancelled the selection!\n--> keeping all available event codes: ');
+        fprintf('you cancelled the selection!\n--> keeping all available event codes: ');
         for e = 1:length(events)
             fprintf('%s ', events{e})            
         end
@@ -482,7 +482,7 @@ for d = 1:length(dataset.raw)
     dataset.raw(d).header = lwdata.header;
     dataset.raw(d).data = lwdata.data; 
     if d == length(dataset.raw)
-        fprintf('done.\n')
+        fprintf('done.\n\n')
     else
         fprintf('\n')
     end
@@ -502,11 +502,10 @@ params.triggers = {'L  1', 'E  1', 'V  1'};
 params.bandpass = [0.1 80];
 params.notch = 50;
 params.epoch.long = [-1.5, 1.5];
-params.epoch.ERP = [-0.3, 1];
-params.epoch.prestim = [-1, 0];
-params.suffix = {'bandpass' 'notch'};
+params.interpolate_n = 4;
+params.suffix = {'bandpass' 'notch' 'reref' 'ep' 'dc' 'ar'};
 % ------------------------- 
-fprintf('section 3: pre-process stimulation data\n')
+fprintf('section 3: pre-process stimulation data\n\n')
 
 % re-load dataset if needed, remove RS data
 if exist('dataset') ~= 1
@@ -525,7 +524,7 @@ for a = 1:length(dataset.raw)
     end
 end
 dataset.raw(data_idx) = [];
-fprintf('done.\n')
+fprintf('done.\n\n')
 
 % add letswave 7 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 7']));
@@ -557,7 +556,7 @@ for b = 1:length(dataset.raw)
     % notch filter
     fprintf('applying FFT notch filter...\n')
     option = struct('filter_type', 'notch', 'notch_fre', params.notch, 'notch_width', 2, 'slope_width', 2,...
-        'harmonic_num', 2,'suffix', params.suffix{2},'is_save', 0);
+        'harmonic_num', 2,'suffix', params.suffix{2},'is_save', 1);
     lwdata = FLW_FFT_filter.get_lwdata(lwdata, option);
     if b == 1
         AP_info(subject_idx).preprocessing(7).process = 'notch filtered';
@@ -573,727 +572,481 @@ for b = 1:length(dataset.raw)
     dataset.preprocessed(b).header = lwdata.header;
     dataset.preprocessed(b).data = lwdata.data; 
     if b == length(dataset.raw)
-        fprintf('done.\n')
+        fprintf('done.\n\n')
     else
         fprintf('\n')
     end
 end
 
 % visual check + adjust triggers if necessary
+fprintf('please verify visually the quality of data and adjust triggers if necessary.\n')
 addpath(genpath([folder.toolbox '\letswave 7']));
 letswave
+
+% ask for channels to interpolate
+while true
+    answer = input('do you want to interpolate any channel? (y/n): ', 's');
+    if any(strcmpi(answer, {'y','n'}))
+        break;
+    else
+        disp('please enter "y" or "n"!');
+    end
+end
+
+% update dataset
+fprintf('updating dataset...\n')
+params.prefix = regexp(dataset.preprocessed(1).header.name, ['(.*)\s+' AP_info(subject_idx).ID], 'tokens');
+params.prefix = params.prefix{1}{1};
+dataset_old = dataset;
+data2load = dir(sprintf('%s*%s*', params.prefix, AP_info(subject_idx).ID));
+dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'preprocessed');
+dataset_new = dataset;
+[dataset_old.preprocessed] = dataset_new.preprocessed;
+dataset = dataset_old;
+clear data2load dataset_old dataset_new
 
 % interpolate bad channels if necessary
-% segment into long epochs
-% remove bad epochs
-% compute ICA matrix 
-% encode ICA
-% split intp short ERP and pre-stimulus epochs
-
-% save info structure and move on
-save(output_file, 'AP_info', '-append');
-clear a b
-fprintf('section 3 finished.\n\n')
-
-%% 3) pre-processing block 1 
-% ----- section input -----
-param.suffix = {'dc' 'bandpass' 'notch' 'ds'};
-param.bandpass = [0.1 80];
-param.ds_ratio = 5;
-% ------------------------- 
-
-% ask for subject number
-if ~exist('subject_idx')
-    prompt = {'subject number:'};
-    dlgtitle = 'subject';
-    dims = [1 40];
-    definput = {''};
-    input = inputdlg(prompt,dlgtitle,dims,definput);
-    subject_idx = str2num(input{1,1});
-end
-clear prompt dlgtitle dims definput input
-
-% update the info structure
-load(output_file, 'AP_info');
-
-% add letswave 7 to the top of search path
-addpath(genpath([folder.toolbox '\letswave 7']));
-
-% loop through datasets
-for d = 1:length(dataset)
-    % provide update
-    fprintf('processing dataset ''%s'':\n', dataset(d).header.name)
-
-    % select the data
-    lwdata.header = dataset(d).header;
-    lwdata.data = dataset(d).data;
-
-    % assign electrode coordinates
-    fprintf('assigning electrode coordinates...')
-    option = struct('filepath', sprintf('%s\\letswave 7\\res\\electrodes\\spherical_locations\\Standard-10-20-Cap81.locs', folder.toolbox), ...
-        'suffix', '', 'is_save', 0);
-    lwdata = FLW_electrode_location_assign.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.block_1(1).process = sprintf('1 - electrode coordinates assigned (standard 10-20-cap81)');
-        AP_info.single_subject(subject_idx).preprocessing.block_1(1).date = sprintf('%s', date);
-    end
-
-    % remove DC + linear detrend
-    fprintf('removing DC and applying linear detrend...')
-    option = struct('linear_detrend', 1, 'suffix', param.suffix{1}, 'is_save', 0);
-    lwdata = FLW_dc_removal.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('2 - DC correction + linear detrend');
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
-    end
-
-    % bandpass
-    fprintf('applying Butterworth bandpass filter...')
-    option = struct('filter_type', 'bandpass', 'high_cutoff', param.bandpass(2),'low_cutoff', param.bandpass(1),...
-        'filter_order', 4, 'suffix', param.suffix{2}, 'is_save', 0);
-    lwdata = FLW_butterworth_filter.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('3 - bandpass filtered [%.1f %.1f]Hz - Butterworth, 4th order', param.bandpass(1), param.bandpass(2));
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
-    end
-
-    % 50 Hz notch
-    fprintf('applying FFT notch filter...')
-    option = struct('filter_type', 'notch', 'notch_fre', 50, 'notch_width', 2, 'slope_width', 2,...
-        'harmonic_num', 2,'suffix', param.suffix{3},'is_save', 0);
-    lwdata = FLW_FFT_filter.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('4 - FFT notch filtered at 50 Hz');
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
-    end
-
-    % downsample and save
-    fprintf('downsampling...\n')
-    option = struct('x_dsratio', param.ds_ratio, 'suffix', param.suffix{4}, 'is_save',1);
-    lwdata = FLW_downsample.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end+1).process = sprintf('5 - downsampled %d times --> final SR %d Hz', param.ds_ratio, 1/lwdata.header.xstep);
-        AP_info.single_subject(subject_idx).preprocessing.block_1(end).date = sprintf('%s', date);
-    end
-
-    % update the dataset
-    dataset(d).header = lwdata.header;
-    dataset(d).data = lwdata.data;
-end
-
-% provide update
-fprintf('Done.\n')
-sound(haleluja)
-
-% save info structure and move on
-save(output_file, 'AP_info', '-append');
-clear param d lwdata option 
-
-%% 4) visual check 1 + adjust triggers
-
-% open letswave 6 for visual check
-addpath(genpath([folder.toolbox '\letswave 6']));
-letswave
-
-%% 5) pre-process LEPs and SEPs
-% ----- section input -----
-param.suffix = {'reref' 'ep' 'dc'};
-param.eventcode = {'LEP' 'SEP'};
-param.epoch = [-0.3 1];
-% ------------------------- 
-
-% ask for subject number
-if ~exist('subject_idx')
-    prompt = {'subject number:'};
-    dlgtitle = 'subject';
-    dims = [1 40];
-    definput = {''};
-    input = inputdlg(prompt,dlgtitle,dims,definput);
-    subject_idx = str2num(input{1,1});
-end
-clear prompt dlgtitle dims definput input
-
-% update the info structure
-load(output_file, 'AP_info');
-
-% add letswave 7 to the top of search path
-addpath(genpath([folder.toolbox '\letswave 7']));
-
-% remove RS-EEG data
-dataset([1:4]) = [];
-
-% loop through datasets
-for d = 1:length(dataset)
-    % provide update
-    fprintf('processing dataset ''%s'':\n', dataset(d).header.name)
-
-    % select the data
-    lwdata.header = dataset(d).header;
-    lwdata.data = dataset(d).data;
-
-    % re-reference to common average
-    fprintf('re-referencing to common average...')
-    option = struct('reference_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, ...
-        'apply_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, 'suffix', param.suffix{1}, 'is_save', 0);
-    lwdata = FLW_rereference.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.ERP(1).process = sprintf('1 - re-referenced to common average');
-        AP_info.single_subject(subject_idx).preprocessing.ERP(1).params = [];
-        AP_info.single_subject(subject_idx).preprocessing.ERP(1).date = sprintf('%s', date);
-    end
-
-    % check events and re-label
-    for e = 1:length(lwdata.header.events)
-        if strcmp(lwdata.header.events(e).code, 'S  1')
-            lwdata.header.events(e).code = param.eventcode{1};
-            idx(e) = false;
-        elseif strcmp(lwdata.header.events(e).code, 'S  2')
-            lwdata.header.events(e).code = param.eventcode{2};
-            idx(e) = false;
-        else
-            idx(e) = true;
-        end
-    end
-    lwdata.header.events(idx) = []; clear idx
-    fprintf('checking events: %d %ss found...', length(lwdata.header.events), lwdata.header.events(1).code)
-
-    % segment
-    fprintf('epoching from %d to %d ms relative to stimulus...\n', param.epoch(1)*1000, param.epoch(2)*1000)
-    option = struct('event_labels', {lwdata.header.events(1).code}, 'x_start', param.epoch(1), 'x_end', param.epoch(2), ...
-        'x_duration', param.epoch(2)-param.epoch(1), 'suffix', param.suffix{2}, 'is_save', 0);
-    lwdata = FLW_segmentation.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.ERP(2).process = sprintf('2 - segmented [%d %d]ms relative to stimulus', param.epoch(1)*1000, param.epoch(2)*1000);
-        AP_info.single_subject(subject_idx).preprocessing.ERP(2).params = [];
-        AP_info.single_subject(subject_idx).preprocessing.ERP(2).date = sprintf('%s', date);
-    end
-
-    % remove DC + linear detrend
-    fprintf('removing DC and applying linear detrend...')
-    option = struct('linear_detrend', 1, 'suffix', param.suffix{3}, 'is_save', 1);
-    lwdata = FLW_dc_removal.get_lwdata(lwdata, option);
-    if d == 1
-        AP_info.single_subject(subject_idx).preprocessing.ERP(3).process = sprintf('3 - DC correction + linear detrend');
-        AP_info.single_subject(subject_idx).preprocessing.ERP(3).params = [];
-        AP_info.single_subject(subject_idx).preprocessing.ERP(3).date = sprintf('%s', date);
-    end
-
-    % update the dataset
-    dataset(d).header = lwdata.header;
-    dataset(d).data = lwdata.data;
-end
-
-% provide update
-fprintf('Done.\n')
-sound(haleluja)
-
-% save info structure and move on
-save(output_file, 'AP_info', '-append');
-clear param d e lwdata option dataset
-
-%% 6) pre-process RS-EEG 
-% ----- section input -----
-param.prefix = 'ds notch bandpass dc';
-param.suffix = {'reref' 'chunked' 'ep' 'RS'};
-param.time = {'pre' 'post'};
-param.eyes = {'open' 'closed'};
-param.eventcode = {'relaxed' 'ready' 'stimulation'};
-param.epoch = [1, 1];
-% -------------------------
-
-% ask for subject number
-if ~exist('subject_idx')
-    prompt = {'subject number:'};
-    dlgtitle = 'subject';
-    dims = [1 40];
-    definput = {''};
-    input = inputdlg(prompt,dlgtitle,dims,definput);
-    subject_idx = str2num(input{1,1});
-end
-clear prompt dlgtitle dims definput input
-
-% update the info structure
-load(output_file, 'AP_info');
-
-% add letswave 7 to the top of search path
-addpath(genpath([folder.toolbox '\letswave 7'])); 
-
-% pre-process continuous data
-for a = 1:length(param.time)
-    for b = 1:length(param.eyes)
+params.channels = {dataset.preprocessed(1).header.chanlocs.labels};
+params.chanlocs = dataset.preprocessed(1).header.chanlocs;
+switch answer
+    case 'n'
         % provide update
-        fprintf('dataset: ''%s RS %s %s''\n', AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a})
+        fprintf('no channels were interpolated.\n');
 
-        % load the data
-        fprintf('loading...')
-        load(sprintf('%s %s RS %s %s.mat', param.prefix, AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a}));
-        load(sprintf('%s %s RS %s %s.lw6', param.prefix, AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a}), '-mat');
-        lwdata.data = data;
-        lwdata.header = header;
-        clear data header
-    
-        % re-reference to common average
-        fprintf('re-referencing to common average...')
-        option = struct('reference_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, ...
-            'apply_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, 'suffix', param.suffix{1}, 'is_save', 0);
-        lwdata = FLW_rereference.get_lwdata(lwdata, option);
-        if a == 1 & b == 1
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(1).process = sprintf('1 - re-referenced to common average');
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(1).params = [];
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(1).date = sprintf('%s', date);
-        end
-
-        % parameters for visualization
-        data_name = sprintf('%s RS %s %s', AP_info.single_subject(subject_idx).ID, param.eyes{b}, param.time{a});
-        data_visual = squeeze(lwdata.data);
-        x = 0:lwdata.header.xstep:size(data_visual, 2)*lwdata.header.xstep;
-        if size(lwdata.header.events, 2) == 2 
-            trigpos = lwdata.header.events(2).latency;
-        else
-            trigpos = 0;
-        end
-        
-        % select 1 minute of clear recording
-        select_EEG(data_name, x, data_visual, param.epoch(1)*60, trigpos);
-        close(gcf)
-
-        % crop the data and update header
-        fprintf('cropping...')
-        data_cropped = data_visual(:, limits(1):limits(2));
-        for c = 1:size(data_cropped, 1)
-            data(1, c, 1, 1, 1, :) = data_cropped(c, :);
-        end
-        lwdata.data = data;
-        lwdata.header.datasize = size(lwdata.data);
-        lwdata.header.events = [];
-        if a == 1 & b == 1
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).process = sprintf('2 - 1 min cropped from continuous EEG');
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).date = sprintf('%s', date);
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).dataset = data_name;
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).limits = limits;
-        else
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).dataset = data_name;
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(2).params((a-1)*2 + b).limits = limits;
-        end
-
-        % chunk
-        fprintf('epoching...')
-        option = struct('chunk_onset', 0, 'chunk_duration', param.epoch(1), 'chunk_interval', param.epoch(1), 'suffix', param.suffix{2}, 'is_save', 1);
-        lwdata = FLW_segmentation_chunk.get_lwdata(lwdata,option);
-        if a == 1 & b == 1
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(3).process = sprintf('3 - continuous EEG split into successive chunks');
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(3).params.epoch_length = param.epoch(1);
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(3).date = sprintf('%s', date);
-        end
-
-        % update and save output
-        fprintf('done\n.')
-        save(output_file, 'AP_info', '-append');
-    end
-end
-
-% identify stimulation conditions
-for c = 1:2
-    param.condition{c} = replace(AP_info.single_subject(subject_idx).condition{c}, '_', ' '); 
-    param.block{c} = sprintf('b%d', c);
-end
-
-% pre-process single trial data
-for a = 1:length(param.condition)
-    for b = 1:length(param.block)
-        % provide update
-        fprintf('dataset: ''%s LEP %s %s''\n', AP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b})
-
-        % load the data
-        fprintf('loading...')
-        load(sprintf('%s %s LEP %s %s.mat', param.prefix, AP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b}));
-        load(sprintf('%s %s LEP %s %s.lw6', param.prefix, AP_info.single_subject(subject_idx).ID, param.condition{a}, param.block{b}), '-mat');
-        lwdata.data = data;
-        lwdata.header = header;
-
-        % sort triggers by event latency
-        events = struct2table(lwdata.header.events);
-        events_sorted = sortrows(events, 'latency'); 
-        events_sorted = table2struct(events_sorted); 
-        lwdata.header.events = events_sorted';
-    
-        % re-reference to common average
-        fprintf('re-referencing to common average...')
-        option = struct('reference_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, ...
-            'apply_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}}, 'suffix', param.suffix{1}, 'is_save', 1);
-        lwdata = FLW_rereference.get_lwdata(lwdata, option);
-
-        % check events and extract epoch limits
-        epoch_limits = [];
-        for e = 1:length(lwdata.header.events)
-            if strcmp(lwdata.header.events(e).code, param.eventcode{1}) & e ~= length(lwdata.header.events)  
-                epoch_limits(end+1, 1) = round(lwdata.header.events(e).latency/lwdata.header.xstep);
-                if strcmp(lwdata.header.events(e+1).code, param.eventcode{2})
-                    idx(e) = false;
-                end
-            elseif strcmp(lwdata.header.events(e).code, param.eventcode{2}) & e ~= length(lwdata.header.events)
-                epoch_limits(end, 2) = round(lwdata.header.events(e).latency/lwdata.header.xstep);
-                if strcmp(lwdata.header.events(e+1).code, param.eventcode{3})
-                    idx(e) = false;
-                end
-            elseif strcmp(lwdata.header.events(e).code, 'S  1')
-                lwdata.header.events(e).code = param.eventcode{3};
-                epoch_limits(end, 3) = round(lwdata.header.events(e).latency/lwdata.header.xstep);
-                idx(e) = false;
-            else
-                idx(e) = true;
+        % encode 
+        AP_info(subject_idx).preprocessing(8).process = sprintf('no channels interpolated');
+        AP_info(subject_idx).preprocessing(8).date = sprintf('%s', date);
+    case 'y'
+        % select channels to interpolate
+        [selection, ok] = listdlg( ...
+        'PromptString', 'Select channels:', ...
+            'SelectionMode', 'multiple', ...
+            'ListString', params.channels, ...
+            'InitialValue', 1:numel(params.channels));      
+        if ok
+            % provide update
+            channels2interp = params.channels(selection);
+            fprintf('interpolating following channel(s): ');
+            for c = 1:length(channels2interp)
+                fprintf('%s ', channels2interp{c})            
             end
-        end
+            fprintf('\n')
 
-        % filter events 
-        lwdata.header.events(idx) = []; clear idx
-        fprintf('checking events: %d event markers found...', length(lwdata.header.events))
-
-        % verify that minimum epoch lenght fits the criteria
-        for e = 1:length(epoch_limits)
-            epoch_length(e, 1) = (epoch_limits(e, 2) - epoch_limits(e, 1))*lwdata.header.xstep; 
-            epoch_length(e, 2) = (epoch_limits(e, 3) - epoch_limits(e, 2))*lwdata.header.xstep; 
-        end
-        if min(epoch_length(:,1)) < param.epoch
-            prompt = sprintf('Minimum epoch length of ''relaxed'' RS-EEG is %.2f s. Please adjust the final epoch length:', min(epoch_length(:,1)));
-            single_trial_epoch.relaxed = input(prompt);
-        else
-            single_trial_epoch.relaxed = param.epoch(2);
-        end
-        if min(epoch_length(:,2)) < param.epoch
-            prompt = sprintf('Minimum epoch length of ''ready'' RS-EEG is %.2f s. Please adjust the final epoch length:', min(epoch_length(:,2)));
-            single_trial_epoch.ready = input(prompt);
-        else
-            single_trial_epoch.ready = param.epoch(2);
-        end
-
-        % backup data
-        data = lwdata.data;
-        header = lwdata.header;
-
-        % segment 'relaxed' RS-EEG 
-        fprintf('segmenting ''relaxed'' data...')
-        option = struct('event_labels', {param.eventcode{2}}, 'x_start', -1 - single_trial_epoch.relaxed, 'x_end', -1, ...
-        'x_duration', single_trial_epoch.relaxed, 'suffix', param.suffix{3}, 'is_save', 0);
-        lwdata = FLW_segmentation.get_lwdata(lwdata, option);
-        if a == 1 & b == 1
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).process = sprintf('4 - single trial ''relaxed'' RS-EEG epochs extracted');
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.eventcode = param.eventcode{2};
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.start = -1 - single_trial_epoch.relaxed;
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).params.end = -1;
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(4).date = sprintf('%s', date);
-        end
-
-        % remove DC + linear detrend
-        fprintf('removing DC and applying linear detrend...')
-        lwdata.header.xstart = 0;
-        option = struct('linear_detrend', 1, 'suffix', [param.suffix{4} ' ' param.eventcode{1}], 'is_save', 1);
-        lwdata = FLW_dc_removal.get_lwdata(lwdata, option);
-
-        % segment 'ready' RS-EEG 
-        lwdata.header = header;
-        lwdata.data = data;
-        fprintf('segmenting ''ready'' data...')
-        option = struct('event_labels', {param.eventcode{3}}, 'x_start', -single_trial_epoch.ready , 'x_end', 0, ...
-        'x_duration', param.epoch(2), 'suffix', param.suffix{3}, 'is_save', 0);
-        lwdata = FLW_segmentation.get_lwdata(lwdata, option);
-        if a == 1 & b == 1
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).process = sprintf('5 - single trial ''ready'' RS-EEG epochs extracted');
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.eventcode = param.eventcode{3};
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.start = -single_trial_epoch.ready;
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).params.end = 0;
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(5).date = sprintf('%s', date);
-        end
-
-        % remove DC + linear detrend
-        fprintf('removing DC and applying linear detrend...')
-        lwdata.header.xstart = 0;
-        option = struct('linear_detrend', 1, 'suffix', [param.suffix{4} ' ' param.eventcode{2}], 'is_save', 1);
-        lwdata = FLW_dc_removal.get_lwdata(lwdata, option);      
-        if a == 1 & b == 1
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(6).process = sprintf('6 - single trial DC correction + linear detrend');
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(6).date = sprintf('%s', date);
-        end
-
-        % update and save output
-        fprintf('done\n.')
-        save(output_file, 'AP_info', '-append');
-    end
-end
-
-% clean and move on
-clear param a b c e x data header lwdata statement epoch_limits epoch_data s data_name data_visual data_cropped epoch_length...
-    trigpos option limits prompt single_trial_epoch events events_sorted
-
-%% 7) visual check 2
-
-% adopen letswave 6
-addpath(genpath([folder.toolbox '\letswave 6']));
-letswave
-
-%% 8) encode deleted ERP epochs, discard associated RS-EEG epochs
-% ----- section input -----
-param.prefix = 'ep reref ds notch bandpass dc';
-param.time = {'RS relaxed' 'RS ready'};
-% -------------------------
-
-% ask for subject number
-if ~exist('subject_idx')
-    prompt = {'subject number:'};
-    dlgtitle = 'subject';
-    dims = [1 40];
-    definput = {''};
-    input = inputdlg(prompt,dlgtitle,dims,definput);
-    subject_idx = str2num(input{1,1});
-end
-clear prompt dlgtitle dims definput input
-
-% update the info structure
-load(output_file, 'AP_info');
-% load('NLEP_info_backup.mat');
-
-% interpolated channels
-prompt = {'interpolated channels:', 'source channels:'};
-dlgtitle = 'interpolated channels';
-dims = [1 35];
-definput = {'none', 'none'};
-input = inputdlg(prompt,dlgtitle,dims,definput);
-AP_info.single_subject(subject_idx).preprocessing.ERP(4).process = sprintf('4 - interpolated channels');
-AP_info.single_subject(subject_idx).preprocessing.ERP(4).params.interpolated = input{1};
-AP_info.single_subject(subject_idx).preprocessing.ERP(4).params.sources = input{2};
-AP_info.single_subject(subject_idx).preprocessing.ERP(4).date = sprintf('%s', date);
-clear prompt dlgtitle definput input
-
-% discarded epochs
-erp = [];
-stim = {'LEP' 'SEP'};
-block = {'b1' 'b2'};
-for t = 1:2
-    for c = 1:2
-        cond = sprintf('%s', replace(AP_info.single_subject(subject_idx).condition{c}, '_', ' '));
-        for b = 1:2
-            erp{end+1} = sprintf('%s %s %s', stim{t}, cond, block{b});        
-        end
-    end
-end
-prompt = erp;
-dlgtitle = 'discarded epochs';
-definput = {'', '', '', '', '', '', '', ''};
-input = inputdlg(prompt,dlgtitle,dims,definput);
-AP_info.single_subject(subject_idx).preprocessing.ERP(5).process = sprintf('5 - discarded epochs');
-for a = 1:length(erp)
-    AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(a).dataset = erp{a};
-    AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(a).discarded = str2num(input{a});
-end
-AP_info.single_subject(subject_idx).preprocessing.ERP(end).date = sprintf('%s', date);
-clear erp stim block cond a b c t prompt dlgtitle definput input dims
-
-% discard correspondig single-trial RS-EEG epochs 
-discarded = false;
-for d = 1:4
-    if ~isempty(AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded) 
-        % note that some epochs were discarded
-        discarded = true;
-
-        % discard corresponding epochs from 'relaxed' and 'ready' datasets
-        for a = 1:length(param.time)
-            % identify and load dataset
-            data_name = sprintf('%s %s %s %s', param.time{a}, param.prefix,  AP_info.single_subject(subject_idx).ID, AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).dataset);
-            load([data_name '.mat']);
-            load([data_name '.lw6'], '-mat');
-
-            % remove epochs and save
-            data(AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded, :, :, :, :, :) = [];
-            header.datasize = size(data);
-            save([data_name '.mat'], 'data');
-            save([data_name '.lw6'], 'header');
-        end
-    end
-end
-AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).process = sprintf('7 - single-trial epochs removed based on LEPs');
-AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).date = sprintf('%s', date);
-if discarded               
-    for d = 1:4
-        if ~isempty(AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded) 
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).params.dataset = AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).dataset;
-            AP_info.single_subject(subject_idx).preprocessing.RSEEG(7).params.discarded = AP_info.single_subject(subject_idx).preprocessing.ERP(5).params(d).discarded;
-        end
-    end
-end
-fprintf('RS-EEG epochs matched to LEPs.\n')
-
-% save info structure and move on
-save(output_file, 'AP_info', '-append');
-% save('NLEP_info_backup.mat', 'NLEP_info');
-clear param input a d filename option lwdata seed discarded data_name data header
-
-%% 9) compute ICA
-% ----- section input -----
-param.prefix_ERP = 'dc ep reref ds notch bandpass dc';
-param.prefix_all = 'reref';
-param.n_files = [8, 20];
-param.crop = [1,1000];
-param.suffix = {'ica_all'};
-% -------------------------
-
-% ask for subject number
-if ~exist('subject_idx')
-    prompt = {'subject number:'};
-    dlgtitle = 'subject';
-    dims = [1 40];
-    definput = {''};
-    input = inputdlg(prompt,dlgtitle,dims,definput);
-    subject_idx = str2num(input{1,1});
-end
-clear prompt dlgtitle dims definput input
-
-% update the info structure
-load(output_file, 'AP_info');
-% load('NLEP_info_backup.mat');
-
-% crop the ERP data
-fprintf('cropping ERP data...')
-file2crop = dir(sprintf('%s*%s*.mat', param.prefix_ERP, AP_info.single_subject(subject_idx).ID));
-if length(file2crop) == param.n_files(1)
-    for d = 1:length(file2crop)
-        % load data and header
-        load(file2crop(d).name);
-        load(sprintf('%slw6', file2crop(d).name(1:end-3)), '-mat');
-
-        % crop the data, adjust the header
-        data = data(:, :, :, :, :, param.crop(1):param.crop(2));
-        header.datasize = size(data);
+            % interpolate identified channels in all datsets
+            for c = 1:length(channels2interp)    
+                % calculate distances with other electrodes
+                chan_n = selection(c);
+                chan_dist = -ones(length(params.channels), 1);
+                for d = setdiff(1:length(params.channels), chan_n)
+                    if params.chanlocs(d).topo_enabled == 1
+                        chan_dist(d) = sqrt((params.chanlocs(d).X - params.chanlocs(chan_n).X)^2 + ...
+                            (params.chanlocs(d).Y - params.chanlocs(chan_n).Y)^2 + ...
+                            (params.chanlocs(d).Z - params.chanlocs(chan_n).Z)^2);
+                    end
+                end
+                chan_dist((chan_dist==-1)) = max(chan_dist);
+                [~, chan_idx] = sort(chan_dist);
+    
+                % identify neighbouring channels
+                chan_idx = chan_idx(1:params.interpolate_n);
+                channels2use = params.channels(chan_idx);
+    
+                % cycle through all datasets
+                for d = 1:length(dataset.preprocessed)
+                    % select data
+                    lwdata.header = dataset.preprocessed(d).header;
+                    lwdata.data = dataset.preprocessed(d).data;
         
-        % save back
-        save([header.name '.mat'], 'data');
-        save([header.name '.lw6'], 'header');
-    end
-else
-    fprintf('Incorrect number of ERP datasets found in the directory: %d\n', length(file2crop));
-    return;
+                    % interpolate using the neighboring electrodes
+                    option = struct('channel_to_interpolate', channels2interp{c}, 'channels_for_interpolation_list', {channels2use}, ...
+                        'suffix', '', 'is_save', 0);
+                    lwdata = FLW_interpolate_channel.get_lwdata(lwdata, option);
+        
+                    % update dataset
+                    dataset.preprocessed(d).header = lwdata.header;
+                    dataset.preprocessed(d).data = lwdata.data;  
+                end
+                
+                % encode
+                if c == 1
+                    AP_info(subject_idx).preprocessing(8).process = sprintf('bad channel(s) interpolated');
+                    AP_info(subject_idx).preprocessing(8).date = sprintf('%s', date);
+                end
+                AP_info(subject_idx).preprocessing(8).params.bad{c} = channels2interp{c};
+                AP_info(subject_idx).preprocessing(8).params.channels_used{c} = strjoin(channels2use, ' ');  
+            end
+        else
+            % encode 
+            fprintf('you cancelled the selection!\n--> no channels will be interpolated.\n');
+            AP_info(subject_idx).preprocessing(8).process = sprintf('no channels interpolated');
+            AP_info(subject_idx).preprocessing(8).date = sprintf('%s', date);
+        end
 end
-
-% define the datasets with associated ICA matrix
-file2process = dir(sprintf('*%s*%s*.mat', param.prefix_all, AP_info.single_subject(subject_idx).ID));
-if length(file2process) == param.n_files(2)
-    for i = 1:length(file2process)
-        filenames{i} = sprintf('%s %s',param.suffix{1}, file2process(i).name);
-    end
-else
-    fprintf('Incorrect number of datasets for ICA found in the directory: %d\n', length(file2process));
-    return;
-end
-
-% open letswave and manually run ICA
-fprintf('OK, run the ICA now!\n')
-addpath(genpath([folder.toolbox '\letswave 6']));
-% letswave
-
-% wait until all files are processed
-wait4files(filenames);
-
-% extract ICA matrices 
-fprintf('extracting ICA matrices...\n')
-load(sprintf('%s %slw6',param.suffix{1}, file2process(1).name(1:end-3)), '-mat');
-ICA.matrix = header.history(end).configuration.parameters.ICA_mm;
-ICA.unmix = header.history(end).configuration.parameters.ICA_um;
-ICA.chanlocs = header.chanlocs;
-for i = 1:size(ICA.unmix, 1)
-    ICA.labels{i} = ['IC',num2str(i)];
-end
-ICA.fs = 1/header.xstep;
-
-% unmix data
-ICA.data = [];
-fprintf('unmixing the data: dataset ')
-for d = 1:length(filenames)
-    fprintf('%d ...', d)
-    load(filenames{d});
-    for e = 1:size(data, 1)
-        ICA.data(end + 1, :, :) = ICA.unmix * squeeze(data(e, :, 1, 1, 1, :));        
-    end
-end
-ICA.data = permute(ICA.data, [2, 1, 3]);
 fprintf('\n')
 
-% calculate spectral content for each 
-fprintf('estimating spectral content...\n')
-for c = 1:size(ICA.data, 1)
-    for e = 1:size(ICA.data, 2)
-        [psd(c, e, :), freq] = pwelch(squeeze(ICA.data(c, e, :)), [], [], [], ICA.fs);  
+% re-reference and segment into long epochs
+for d = 1:length(dataset.preprocessed)
+    % provide update
+    fprintf('%d. dataset: %s\n', d, dataset.preprocessed(d).name)
+
+    % select data
+    lwdata.header = dataset.preprocessed(d).header;
+    lwdata.data = dataset.preprocessed(d).data; 
+
+    % re-reference to common average
+    fprintf('re-referencing to common average...\n')
+    option = struct('reference_list', {params.channels}, 'apply_list', {params.channels}, ...
+        'suffix', params.suffix{3}, 'is_save', 0);
+    lwdata = FLW_rereference.get_lwdata(lwdata, option);
+    if d == 1
+        AP_info(subject_idx).preprocessing(9).process = sprintf('re-referenced to common average');
+        AP_info(subject_idx).preprocessing(9).suffix = params.suffix{3};
+        AP_info(subject_idx).preprocessing(9).date = sprintf('%s', date);
+    end
+
+    % select the trigger
+    for e = 1:length(params.data)
+        if contains(lwdata.header.name, params.data{e})
+            trigger = params.triggers{e};
+        end
+    end
+
+    % epoch
+    fprintf('segmenting into long epochs...\n')
+    option = struct('event_labels', {trigger}, 'x_start', params.epoch.long(1), 'x_end', params.epoch.long(2), ...
+        'x_duration', params.epoch.long(2) - params.epoch.long(1), 'suffix', params.suffix{4}, 'is_save', 0);
+    lwdata = FLW_segmentation.get_lwdata(lwdata, option);
+    if d == 1
+        AP_info(subject_idx).preprocessing(10).process = sprintf('segmented to long epochs');
+        AP_info(subject_idx).preprocessing(10).params.trigger = trigger;
+        AP_info(subject_idx).preprocessing(10).params.limits = params.epoch.long;
+        AP_info(subject_idx).preprocessing(10).suffix = params.suffix{4};
+        AP_info(subject_idx).preprocessing(10).date = sprintf('%s', date);
+    end
+
+    % remove DC + linear detrend, save for letswave
+    fprintf('removing DC and applying linear detrend...\nsaving for letswave...\n')
+    option = struct('linear_detrend', 1, 'suffix', params.suffix{5}, 'is_save', 1);
+    lwdata = FLW_dc_removal.get_lwdata(lwdata, option);
+    if d == 1
+        AP_info(subject_idx).preprocessing(11).process = sprintf('DC + linear detrend on epoched data');
+        AP_info(subject_idx).preprocessing(11).suffix = params.suffix{5};
+        AP_info(subject_idx).preprocessing(11).date = sprintf('%s', date);
+    end
+
+    % update dataset
+    dataset.preprocessed(d).header = lwdata.header;
+    dataset.preprocessed(d).data = lwdata.data; 
+    if d == length(dataset.preprocessed)
+        fprintf('done.\n\n')
+    else
+        fprintf('\n')
     end
 end
-ICA.psd = squeeze(mean(psd, 2));
-fprintf('done.\n')
 
-% plot component topographies and spectral content
-figure('units','normalized','outerposition',[0 0 1 1]);
-hold on
-for f = 1:size(ICA.unmix, 1)
-    % plot the topography
-    subplot(size(ICA.unmix, 1)/3, 6, (f-1)*2 + 1);
-    topoplot(ICA.matrix(:, f), ICA.chanlocs, 'maplimits', [-4 4], 'shading', 'interp', 'whitebk', 'on', 'electrodes', 'off')
-    set(gca,'color',[1 1 1]);
-    title(ICA.labels{f})
-
-    % plot the psd
-    subplot(size(ICA.unmix, 1)/3, 6, (f-1)*2 + 2);
-    plot(freq(1:21), ICA.psd(f, 1:21));
-    xlabel('Frequency (Hz)');
-    ylabel('Power (dB)');
+% remove bad epochs
+fprintf('please check data visually and discard bad epochs.\n')
+addpath(genpath([folder.toolbox '\letswave 6']));
+letswave
+for f = 1:length(dataset.preprocessed)
+    filenames{f} = sprintf('%s %s.mat', params.suffix{6}, dataset.preprocessed(f).header.name);
 end
-saveas(gcf, sprintf('%s\\figures\\ICA_%s.png', folder.output, AP_info.single_subject(subject_idx).ID));
+wait4files(filenames);
+fprintf('\n')
 
-% save parameters 
-AP_info.single_subject(subject_idx).preprocessing.ICA.n_components = size(ICA.unmix, 1);
-AP_info.single_subject(subject_idx).preprocessing.ICA.matrix = ICA.matrix;
-AP_info.single_subject(subject_idx).preprocessing.ICA.unmix = ICA.unmix;
-AP_info.single_subject(subject_idx).preprocessing.ICA.psd = ICA.psd;
-AP_info.single_subject(subject_idx).preprocessing.ICA.freq = freq;
-save(output_file, 'AP_info', '-append');
-% save('NLEP_info_backup.mat', 'NLEP_info')
+% load dataset with bad epochs removed
+fprintf('updating dataset...\n')
+params.prefix = regexp(dataset.preprocessed(1).header.name, ['(.*)\s+' AP_info(subject_idx).ID], 'tokens');
+params.prefix = params.prefix{1}{1};
+dataset_old = dataset;
+data2load = dir(sprintf('%s*%s*', params.suffix{6}, AP_info(subject_idx).ID));
+dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'filtered');
+dataset_new = dataset;
+[dataset_old.filtered] = dataset_new.filtered;
+dataset = dataset_old;
+clear data2load dataset_old dataset_new
 
-clear param file2crop c d e f i header data file2process filenames ICA psd freq 
+% encode bad epochs
+fprintf('encoding bad epochs...\n')
+AP_info(subject_idx).preprocessing(12).process = sprintf('bad epochs discarded');
+AP_info(subject_idx).preprocessing(12).params.GUI = 'letswave';
+AP_info(subject_idx).preprocessing(12).suffix = params.suffix{6};
+AP_info(subject_idx).preprocessing(12).date = sprintf('%s', date);
+for a = 1:length(dataset.filtered)
+    % subset header
+    header = dataset.filtered(a).header;
 
-%% 10) encode ICA 
-% ----- section input -----
-param.prefix = 'icfilt';
-% ------------------------- 
+    % extract discarded expochs
+    if ~isempty(header.history(end).configuration)
+        if ~isempty(header.history(end).configuration.parameters.rejected_epochs)
+            discarded = header.history(end).configuration.parameters.rejected_epochs;
+        else
+            discarded = [];
+        end
+    end
 
-% ask for subject number if necessary
-if ~exist('subject_idx')
-    prompt = {'subject number:'};
-    dlgtitle = 'subject';
-    dims = [1 40];
-    definput = {''};
-    input = inputdlg(prompt,dlgtitle,dims,definput);
-    subject_idx = str2num(input{1,1});
+    % encode 
+    AP_info(subject_idx).preprocessing(12).params.discarded(a).dataset = dataset.filtered(a).name;
+    AP_info(subject_idx).preprocessing(12).params.discarded(a).trials = discarded;
+    AP_info(subject_idx).preprocessing(12).params.kept(a).dataset = dataset.filtered(a).name;
+    AP_info(subject_idx).preprocessing(12).params.kept(a).trials = header.datasize(1);
 end
-clear prompt dlgtitle dims definput input
-
-% update the info structure
-load(output_file, 'AP_info');
-% load('NLEP_info_backup.mat');
-
-% encode ICA outcome
-prompt = {'blinks:', 'horizontal:', 'muscles:', 'electrode noise:'};
-dlgtitle = 'ICA';
-dims = [1 40];
-definput = {'', '', '', ''};
-input = inputdlg(prompt,dlgtitle,dims,definput);
-AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept = AP_info.single_subject(subject_idx).preprocessing.ICA.n_components...
-    - length([str2num(input{1}), str2num(input{2}), str2num(input{3}), str2num(input{4})]);
-AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.blinks = str2num(input{1});
-AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.horizontal = str2num(input{2});
-AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.muscles = str2num(input{3});
-AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_removed.electrodes = str2num(input{4});
-AP_info.single_subject(subject_idx).preprocessing.ICA.date = sprintf('%s', date);
-clear prompt dlgtitle dims definput input
+fprintf('done.\n\n')
 
 % save info structure and move on
 save(output_file, 'AP_info', '-append');
-% save('NLEP_info_backup.mat', 'NLEP_info')
-clear param subject_idx
+clear a b c d e f answer chan_dist chan_idx chan_n channels2interp channels2use data_idx ...
+    discarded filenames header lwdata ok option selection trigger
+fprintf('section 3 finished.\n\n')
+
+%% 4) ICA - remove ocular & muscle artifacts
+% ----- section input -----
+params.prefix = 'ar dc ep reref notch bandpass dc ds crop';
+params.ICA_comp = 30;
+params.suffix = {'ica_all' 'icfilt'};
+% ------------------------- 
+fprintf('section 4: remove ocular & muscle artifacts using ICA\n\n')
+
+% re-load dataset if needed
+if exist('dataset') ~= 1
+    fprintf('loading dataset...\n')
+    data2load = dir(sprintf('%s*%s*', params.prefix, AP_info(subject_idx).ID));
+    dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'filtered');
+    clear data2load
+    fprintf('done.\n\n')
+end
+
+% add letswave 7 to the top of search path
+addpath(genpath([folder.toolbox '\letswave 7']));
+
+% compute ICA matrix 
+fprintf('computing ICA matrix...\n')
+lwdataset = dataset.filtered;  
+addpath(genpath([folder.toolbox '\letswave 7']));
+option = struct('ICA_mode', 2, 'algorithm', 1, 'num_ICs', params.ICA_comp, 'suffix', params.suffix{1}, 'is_save', 1);
+lwdataset = FLW_compute_ICA_merged.get_lwdataset(lwdataset, option);
+fprintf('done.\n\n')
+
+% extract ICA parameters
+fprintf('extracting ICA parameters...\n')
+matrix.mix = lwdataset(1).header.history(end).option.mix_matrix;
+matrix.unmix = lwdataset(1).header.history(end).option.unmix_matrix;    
+params.chanlocs = lwdataset(1).header.chanlocs;
+for i = 1:size(matrix.mix, 2)
+    params.ICA_labels{i} = ['IC',num2str(i)];
+end
+params.ICA_SR = 1/lwdataset(1).header.xstep;
+
+% encode
+AP_info(subject_idx).preprocessing(13).process = 'ICA matrix computed';
+AP_info(subject_idx).preprocessing(13).params.method = 'runica';
+AP_info(subject_idx).preprocessing(13).params.components = params.ICA_comp;
+AP_info(subject_idx).preprocessing(13).params.chanlocs = params.chanlocs;
+AP_info(subject_idx).preprocessing(13).params.labels = params.ICA_labels;
+AP_info(subject_idx).preprocessing(13).params.SR = params.ICA_SR;
+AP_info(subject_idx).preprocessing(13).params.matrix = matrix;
+AP_info(subject_idx).preprocessing(13).suffix = params.suffix{1};
+AP_info(subject_idx).preprocessing(13).date = sprintf('%s', date);
+
+% update dataset and adjust for letswave 6
+fprintf('updating dataset...\n')
+for a = 1:length(lwdataset)
+    % update filtred dataset
+    dataset.filtered(a).header = lwdataset(a).header;
+    dataset.filtered(a).data = lwdataset(a).data;
+
+    % adjust header for letswave 6
+    dataset.filtered(a).header.history(end).configuration.gui_info.function_name = 'LW_ICA_compute_merged';  
+    dataset.filtered(a).header.history(end).configuration.parameters = dataset.filtered(a).header.history(end).option;  
+    [dataset.filtered(a).header.history(end).configuration.parameters.ICA_um] = dataset.filtered(a).header.history(end).configuration.parameters.unmix_matrix; 
+    [dataset.filtered(a).header.history(end).configuration.parameters.ICA_mm] = dataset.filtered(a).header.history(end).configuration.parameters.mix_matrix; 
+    dataset.filtered(a).header.history(end).configuration.parameters = rmfield(dataset.filtered(a).header.history(end).configuration.parameters, {'unmix_matrix' 'mix_matrix'});
+    header = dataset.filtered(a).header;
+    save(sprintf('%s.lw6', dataset.filtered(a).header.name), 'header');
+end
+
+% unmix data
+fprintf('unmixing data...\n')
+for b = 1:length(dataset.filtered)
+    for e = 1:size(dataset.filtered(b).data, 1)
+        dataset.unmixed(b).name = dataset.filtered(b).name;
+        dataset.unmixed(b).header = dataset.filtered(b).header;
+        dataset.unmixed(b).data(e, :, 1, 1, 1, :) = matrix.unmix * squeeze(dataset.filtered(b).data(e, :, 1, 1, 1, :));        
+    end
+end
+
+% calculate PSD across all datasets and trials 
+fprintf('estimating spectral content of ICs...\n')
+psd = [];
+for c = 1:params.ICA_comp
+    for d = 1:length(dataset.unmixed)
+        for e = 1:size(dataset.unmixed(d).data, 1)
+            [psd(c, d, e, :), freq] = pwelch(squeeze(dataset.unmixed(d).data(e, c, 1, 1, 1, :)), ...
+                [], [], [], AP_info(subject_idx).preprocessing(13).params.SR);  
+        end
+    end
+end
+AP_info(subject_idx).preprocessing(13).params.PSD = squeeze(mean(psd, [2, 3]));
+
+% plot IC spectral content (in 2 figures to keep the size readable)
+for a = 1:2
+    figure('units','normalized','outerposition',[0 0 1 1]);
+    hold on
+    components2plot = (a-1)*(params.ICA_comp/2) + [1:ceil(params.ICA_comp/2)];
+    for f = 1:ceil(params.ICA_comp/2)
+        % plot the topography
+        matrix = AP_info(subject_idx).preprocessing(13).params.matrix.mix;
+        subplot(ceil(length(components2plot)/3), 6, (f-1)*2 + 1);
+        topoplot(double(matrix(:, components2plot(f))'), params.chanlocs, 'maplimits', [-4 4], 'shading', 'interp', 'whitebk', 'on', 'electrodes', 'off')
+        set(gca,'color',[1 1 1]);
+        title(params.ICA_labels{components2plot(f)})
+    
+        % plot the psd
+        subplot(ceil(length(components2plot)/3), 6, (f-1)*2 + 2);
+        plot(freq(1:max(find(freq <= 45))), log10(AP_info(subject_idx).preprocessing(13).params.PSD(components2plot(f), 1:max(find(freq <= 45)))));
+        xlabel('Frequency (Hz)');
+        ylabel('Power (dB)');
+    end
+    saveas(gcf, sprintf('%s\\figures\\ICA_%s_%d.png', folder.output, AP_info(subject_idx).ID, a));
+end
+
+% remove artifactual ICs
+fprintf('please perform ICA manually in letswave 6.\n')
+addpath(genpath([folder.toolbox '\letswave 6']));
+letswave
+for f = 1:length(dataset.preprocessed)
+    filenames{f} = sprintf('%s %s.mat', params.suffix{2}, dataset.filtered(f).header.name);
+end
+wait4files(filenames);
+fprintf('\n')
+
+% load dataset with artifactual ICs removed
+fprintf('updating dataset...\n')
+params.prefix = regexp(dataset.filtered(1).header.name, ['(.*)\s+' AP_info(subject_idx).ID], 'tokens');
+params.prefix = params.prefix{1}{1};
+dataset_old = dataset;
+data2load = dir(sprintf('%s*%s*', params.suffix{2}, AP_info(subject_idx).ID));
+dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'filtered');
+dataset_new = dataset;
+[dataset_old.filtered] = dataset_new.filtered;
+dataset = dataset_old;
+clear data2load dataset_old dataset_new
+
+% ask for the input
+prompt = {'blinks:', 'horizontal:', 'muscles:', 'electrodes:'};
+dlgtitle = 'ICs removed';  
+dims = [1 60];
+definput = {'', '', '', ''};
+input = inputdlg(prompt,dlgtitle,dims,definput);
+clear prompt dlgtitle dims definput 
+
+% encode ICA 
+AP_info(subject_idx).preprocessing(14).process = 'artifactual ICs discarded';
+AP_info(subject_idx).preprocessing(14).suffix = params.suffix{2};
+AP_info(subject_idx).preprocessing(14).date = sprintf('%s', date);
+AP_info(subject_idx).preprocessing(14).params.kept = params.ICA_comp - length([str2num(input{1}), str2num(input{2}), str2num(input{3}), str2num(input{4})]);
+AP_info(subject_idx).preprocessing(14).params.removed.blinks = str2num(input{1});
+AP_info(subject_idx).preprocessing(14).params.removed.horizontal = str2num(input{2});
+AP_info(subject_idx).preprocessing(14).params.removed.muscles = str2num(input{3});
+AP_info(subject_idx).preprocessing(14).params.removed.electrodes = str2num(input{4});
+
+% save info structure and move on
+save(output_file, 'AP_info', '-append');
+clear a b c d e f i components2plot filenames freq input lwdataset matrix option psd 
+fprintf('section 4 finished.\n\n')
+
+%% 5) split stimulation data into conditions
+% ----- section input -----
+params.prefix = 'icfilt ica_all ar dc ep reref notch bandpass dc ds crop';
+params.data = {'laser', 'electric', 'visual'};
+params.triggers = {'L  1', 'E  1', 'V  1'};
+params.ready = 'G  1';
+params.epoch.ERP = [-0.3, 1];
+params.epoch.prestim = [-1, 0];
+params.suffix = {'ERP' 'prestim'};
+% ------------------------- 
+fprintf('section 5: split stimulation data into conditions\n\n')
+
+% re-load dataset if needed
+if exist('dataset') ~= 1
+    fprintf('loading dataset...\n')
+    data2load = dir(sprintf('%s*%s*', params.prefix, AP_info(subject_idx).ID));
+    dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'filtered');
+    clear data2load
+    fprintf('done.\n\n')
+end
+
+% add letswave 7 to the top of search path
+addpath(genpath([folder.toolbox '\letswave 7']));
+
+% cycle through data
+for a = 1:length(params.data)
+    % select all the appropriate datasets
+    idx_data = logical([]);
+    for b = 1:length(dataset.filtered)
+        if contains(dataset.filtered(b).name, params.data{a})
+            idx_data(b) = true;
+        else
+            idx_data(b) = false;
+        end
+    end
+    data2process = dataset.filtered(idx_data);
+
+    % select the trigger
+    trigger = params.triggers{a};
+
+    % cycle through datasets
+    for b = 1:length(data2process)
+        % provide update
+        fprintf('dataset: %s\n', data2process(b).name)
+
+        % cycle through epoch types
+        for c = 1:length(params.suffix)   
+            % subset the data
+            lwdata.header = data2process(b).header;
+            lwdata.data = data2process(b).data;
+
+            % determine epoch limits
+            epoch = params.epoch.(params.suffix{c});
+            
+            % epoch
+            fprintf('saving the %s epoch...\n', params.suffix{c})
+            option = struct('event_labels', {trigger}, 'x_start', epoch(1), 'x_end', epoch(2), ...
+                'x_duration', epoch(2) - epoch(1), 'suffix', params.suffix{c}, 'is_save', 1);
+            lwdata = FLW_segmentation.get_lwdata(lwdata, option);
+            if b == 1 
+                AP_info(subject_idx).preprocessing(15).process = sprintf('segmented to short epochs');
+                AP_info(subject_idx).preprocessing(15).params.trigger{a} = trigger;
+                AP_info(subject_idx).preprocessing(15).params.epochs(c).data = params.suffix{c};
+                AP_info(subject_idx).preprocessing(15).params.epochs(c).limits = epoch;
+                AP_info(subject_idx).preprocessing(15).suffix{c} = params.suffix{c};
+                AP_info(subject_idx).preprocessing(15).date = sprintf('%s', date);
+            end
+
+            % save to the dataset
+            dataset.(params.suffix{c}).(params.data{a})(b).name = data2process(b).name;
+            dataset.(params.suffix{c}).(params.data{a})(b).header = lwdata.header;
+            dataset.(params.suffix{c}).(params.data{a})(b).data = lwdata.data;
+        end
+        fprintf('\n')
+    end
+end
+fprintf('done.\n\n')
+
+% save info structure and move on
+save(output_file, 'AP_info', '-append');
+clear a b c d data2process epoch header idx_data option lwdata trigger
+fprintf('section 5 finished.\n\n')
+
+%% to add:
+% single-trial ERP pre-processing:
+%   - LEP pre-processing per component --> N1, N2, P2
+%   - SEP N2 and P2 estimation
+%   - VEP N2 and P2 estimation
+% extraction of ERP amplitudes and latencies
+% single-trial prestim pre-processing at sensor level
+% single-trial source activity estimation --> processing at source level
+
 
 %% 11) LEPs: identify N2P2 component and subtract it for N1 analysis
 % ----- section input -----
@@ -3814,41 +3567,68 @@ function dataset = reload_dataset(ID, data2load, fieldname)
 %           - data2load = list of datasets to load
 %           - fieldname
 % =========================================================================  
-% initiate output
-dataset = struct;
-
-% sort datasets
-header_idx = logical([]);
-data_idx = logical([]);
-for d = 1:length(data2load)
-    if contains(data2load(d).name, 'lw6') 
-        header_idx(d) = true;
-        data_idx(d) = false;
-    elseif contains(data2load(d).name, 'mat') 
-        header_idx(d) = false;
-        data_idx(d) = true;
+    % initiate output
+    dataset = struct;
+    
+    % sort datasets
+    header_idx = logical([]);
+    data_idx = logical([]);
+    for d = 1:length(data2load)
+        if contains(data2load(d).name, 'lw6') 
+            header_idx(d) = true;
+            data_idx(d) = false;
+        elseif contains(data2load(d).name, 'mat') 
+            header_idx(d) = false;
+            data_idx(d) = true;
+        end
+    end
+    headers = data2load(header_idx);
+    datas = data2load(data_idx);
+    
+    % load 
+    if length(datas) == length(headers) 
+        for d = 1:length(datas)
+            % header
+            load(sprintf('%s\\%s', headers(d).folder, headers(d).name), '-mat')
+            dataname = regexp(header.name, [ID '\s*(.*)'], 'tokens');
+            dataname = dataname{1}{1};
+            dataset.(fieldname)(d).name = dataname;
+            dataset.(fieldname)(d).header = header; 
+    
+            % data
+            load(sprintf('%s\\%s', datas(d).folder, datas(d).name))
+            dataset.(fieldname)(d).data = data;
+        end
+    else
+        error('ERROR: Wrong number of available datasets to load! Check manually.')
     end
 end
-headers = data2load(header_idx);
-datas = data2load(data_idx);
-
-% load 
-if length(datas) == length(headers) 
-    for d = 1:length(datas)
-        % header
-        load(sprintf('%s\\%s', headers(d).folder, headers(d).name), '-mat')
-        dataname = regexp(header.name, [ID '\s*(.*)'], 'tokens');
-        dataname = dataname{1}{1};
-        dataset.(fieldname)(d).name = dataname;
-        dataset.(fieldname)(d).header = header; 
-
-        % data
-        load(sprintf('%s\\%s', datas(d).folder, datas(d).name))
-        dataset.(fieldname)(d).data = data;
+function wait4files(filenames)
+% =========================================================================
+% waitForFiles pauses the script until all required files appear in the
+% working working directory
+% --> file names are specified in a cell array
+% =========================================================================    
+    % loop to wait for files
+    while true
+        allFilesExist = true;
+        
+        % check for each file
+        for i = 1:length(filenames)
+            if isempty(dir(filenames{i}))
+                allFilesExist = false;
+                break;
+            end
+        end
+        
+        % if all files exist, break the loop
+        if allFilesExist
+            break;
+        end
+        
+        % pause for 2s
+        pause(2);
     end
-else
-    error('ERROR: Wrong number of available datasets to load! Check manually.')
-end
 end
 function select_EEG(data_name, time_vector, data_visual, s, duration, trigpos, varargin)
     % check for colours
@@ -3929,31 +3709,6 @@ function draggable_rect = make_draggable(rect, x, s)
         end_time = round(start_time + pos(3), 3);
         limits = [start_time, end_time];
         assignin('base', 'limits', limits);
-    end
-end
-function wait4files(filenames)
-    % waitForFiles pauses the script until all required files appear in the working directory
-    % file names are specified in a cell array
-    
-    % loop to wait for files
-    while true
-        allFilesExist = true;
-        
-        % check for each file
-        for i = 1:length(filenames)
-            if isempty(dir(filenames{i}))
-                allFilesExist = false;
-                break;
-            end
-        end
-        
-        % if all files exist, break the loop
-        if allFilesExist
-            break;
-        end
-        
-        % pause for 2s
-        pause(2);
     end
 end
 function [peak_x, peak_y] = gfp_plot(x, y, xstep, labeled, varargin)
