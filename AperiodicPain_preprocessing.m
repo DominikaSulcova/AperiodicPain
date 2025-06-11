@@ -21,11 +21,11 @@
 %           --> pattern-onset VEPs - 1° checkerboard stimuli, 200ms flash
 %           --> 2 blocks of 30 stimuli
 % 
-% Preprocessing:
-%   1) fill in metadata 
+% Processing steps:
+%   1) fill in subject & session information 
 %           --> allows user to manually encode information about 
-%               the subject, session, stimulation
-%           --> creates a new entry in a structure 'AP_info' and saves
+%               the subject, session, stimulation parameters...
+%           --> all this and following information is encoded in AP_info 
 %   2) import EEG data
 %           --> searches in the input directory to identify all datasets
 %           --> imports to MATLAB as variable 'dataset'
