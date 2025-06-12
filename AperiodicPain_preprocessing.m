@@ -316,19 +316,19 @@ for a = 1:length(params.data)
         filename = sprintf('%s\\%s', file2import(c).folder, file2import(c).name);
 
         % deal with blocks
+        breaks = strfind(datanames{c}, ' ');
         if contains(dataname, 'RS')
+            datanames{c}(breaks(end) + 1 : end) = [];
             if blocks(c) < 4
-                datanames{c}(end - 1:end+1) = 'pre';
+                datanames{c}(end + 1 : end + 3) = 'pre';
             else
-                datanames{c}(end - 1:end+2) = 'post';
+                datanames{c}(end + 1 : end + 4) = 'post';
             end
-        else
-            breaks = strfind(datanames{c}, ' ');
-            if ismember(blocks(c), blocks_rep.b1)
-                datanames{c}(breaks(end) + 1 : end) = [];
+        else    
+            datanames{c}(breaks(end) + 1 : end) = [];
+            if ismember(blocks(c), blocks_rep.b1)                
                 datanames{c}(end + 1 : end + 2) = 'b1';
             elseif ismember(blocks(c), blocks_rep.b2)
-                datanames{c}(breaks(end) + 1 : end) = [];
                 datanames{c}(end + 1 : end + 2) = 'b2';
             end
         end
