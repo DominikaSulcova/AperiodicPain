@@ -1043,126 +1043,185 @@ fprintf('section 5 finished.\n\n')
 %   - LEP pre-processing per component --> N1, N2, P2
 %   - SEP N2 and P2 estimation
 %   - VEP N2 and P2 estimation
+% baseline correcton after final ICA for all conditions!
 % extraction of ERP amplitudes and latencies
 % single-trial prestim pre-processing at sensor level
 % single-trial source activity estimation --> processing at source level
 
 
-%% 11) LEPs: identify N2P2 component and subtract it for N1 analysis
+%% 6) LEPs: identify N2P2 component and subtract it for N1 analysis
 % ----- section input -----
-param.prefix = 'icfilt ica_all dc ep reref ds notch bandpass dc';
-param.suffix = {'reref_AFz' 'ica_N1' 'icfilt' 'bl'};
-param.n_files = 4;
-param.ref = 'AFz';
-param.EOI = {'C5' 'C6'};
-param.TOI = [0.1 0.22];
-param.baseline = [-0.25 0];
+params.prefix = 'ERP icfilt ica_all ar dc ep reref notch bandpass dc ds crop';
+params.suffix = {'reref_AFz' 'ica_N1' 'icfilt' 'bl'};
+params.ref = 'AFz';
+params.EOI = {'C5' 'C6'};
+params.TOI = [0.1 0.22];
+params.baseline = [-0.25 0];
 % -------------------------
+fprintf('section 6: LEPs - subtract N2P2 for N1 analysis\n\n')
 
-% ask for subject number
-if ~exist('subject_idx')
-    prompt = {'subject number:'};
-    dlgtitle = 'subject';
-    dims = [1 40];
-    definput = {''};
-    input = inputdlg(prompt,dlgtitle,dims,definput);
-    subject_idx = str2num(input{1,1});
+% re-load dataset if needed
+if exist('dataset') ~= 1
+    fprintf('loading dataset...\n')
+    data2load = dir(sprintf('%s*%s*', params.prefix, AP_info(subject_idx).ID));
+    dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'ERP');
+    clear data2load
+    fprintf('done.\n\n')
 end
-clear prompt dlgtitle dims definput input
-
-% update the info structure
-load(output_file, 'AP_info');
 
 % add letswave 7 to the top of search path
 addpath(genpath([folder.toolbox '\letswave 7']));
 
-% identify LEP datasets
-cd(folder.input)
-file2process = dir(sprintf('%s*%s LEP*.mat', param.prefix, AP_info.single_subject(subject_idx).ID));
-cd(folder.data)
+% subset LEP datasets
+for d = 1:length(dataset.ERP)
+    if contains(dataset.ERP(d).name, 'laser')
+        data_idx(d) = true;
+    else
+        data_idx(d) = false;
+    end
+end
+subset = dataset.ERP(data_idx);
+lwdataset = subset;
 
 % re-reference to chosen frontal central electrode
-fprintf('re-referencing to %s...\n', param.ref)
-for d = 1:length(file2process)
-    % load dataset
-    filepath = sprintf('%s\\%s.lw6', file2process(d).folder, file2process(d).name(1:end-4));
-    option = struct('filename', filepath);
-    lwdata = FLW_load.get_lwdata(option);
+fprintf('re-referencing to %s...\n', params.ref)
+params.chanlocs = lwdataset(1).header.chanlocs;
+for d = 1:length(lwdataset)
+    % choose dataset
+    lwdata.data = lwdataset(d).data;
+    lwdata.header = lwdataset(d).header;
 
     % re-reference
-    option = struct('reference_list', {{param.ref}}, 'apply_list', {{lwdata.header.chanlocs(1:length(lwdata.header.chanlocs)).labels}},...
-    'suffix', param.suffix{1}, 'is_save', 1);
-    lwdata = FLW_rereference.get_lwdata(lwdata, option);            
+    option = struct('reference_list', {{params.ref}}, 'apply_list', {{params.chanlocs.labels}},...
+    'suffix', params.suffix{1}, 'is_save', 0);
+    lwdata = FLW_rereference.get_lwdata(lwdata, option); 
+
+    % update subset
+    lwdataset(d).data = lwdata.data;
+    lwdataset(d).header = lwdata.header;
 end
+AP_info(subject_idx).preprocessing(16).process = 'LEPs: re-reference to create dataset for N1 analysis';
+AP_info(subject_idx).preprocessing(16).params.ref = params.ref;
+AP_info(subject_idx).preprocessing(16).suffix = params.suffix{1};
+AP_info(subject_idx).preprocessing(16).date = sprintf('%s', date);
 
-% identify outcome filenames
-if length(file2process) == param.n_files
-    for i = 1:length(file2process)
-        filenames{i} = sprintf('%s %s',[param.suffix{2} ' ' param.suffix{1}], file2process(i).name);
-    end
-else
-    fprintf('Incorrect number of datasets for ICA found in the directory: %d\n', length(file2process));
-    return;
+% compute ICA matrix 
+fprintf('computing ICA matrix (%s components) ...\n', AP_info(subject_idx).preprocessing(14).params.kept)
+option = struct('ICA_mode', 2, 'algorithm', 1, 'num_ICs', AP_info(subject_idx).preprocessing(14).params.kept, 'suffix', params.suffix{2}, 'is_save', 1);
+lwdataset = FLW_compute_ICA_merged.get_lwdataset(lwdataset, option);
+fprintf('done.\n\n')
+
+% extract ICA parameters
+fprintf('extracting ICA parameters...\n')
+matrix.mix = lwdataset(1).header.history(end).option.mix_matrix;
+matrix.unmix = lwdataset(1).header.history(end).option.unmix_matrix;    
+params.chanlocs = lwdataset(1).header.chanlocs;
+for i = 1:size(matrix.mix, 2)
+    params.ICA_labels{i} = ['IC',num2str(i)];
 end
+params.ICA_SR = 1/lwdataset(1).header.xstep;
 
-% open letswave and manually run ICA
-fprintf('You can run the ICA now - for subject %d, compute %d components!\n', subject_idx, AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept)
-addpath(genpath([folder.toolbox '\letswave 6']));
-letswave
+% encode
+AP_info(subject_idx).preprocessing(17).process = 'LEP: second ICA matrix computed';
+AP_info(subject_idx).preprocessing(17).params.method = 'runica';
+AP_info(subject_idx).preprocessing(17).params.components = AP_info(subject_idx).preprocessing(14).params.kept;
+AP_info(subject_idx).preprocessing(17).params.chanlocs = params.chanlocs;
+AP_info(subject_idx).preprocessing(17).params.labels = params.ICA_labels;
+AP_info(subject_idx).preprocessing(17).params.SR = params.ICA_SR;
+AP_info(subject_idx).preprocessing(17).params.matrix = matrix;
+AP_info(subject_idx).preprocessing(17).suffix = params.suffix{2};
+AP_info(subject_idx).preprocessing(17).date = sprintf('%s', date);
 
-% wait until all files are processed
-wait4files(filenames);
+% update dataset and adjust for letswave 6
+fprintf('updating dataset...\n')
+for a = 1:length(lwdataset)
+    % update filtred dataset
+    dataset.LEP_N1(a).name = subset(a).name;;
+    dataset.LEP_N1(a).header = lwdataset(a).header;
+    dataset.LEP_N1(a).data = lwdataset(a).data;
 
-% extract ICA matrices 
-fprintf('extracting ICA matrices...\n')
-load(sprintf('%slw6', filenames{1}(1:end-3)), '-mat');
-ICA.matrix = header.history(end).configuration.parameters.ICA_mm;
-ICA.unmix = header.history(end).configuration.parameters.ICA_um;
-ICA.chanlocs = header.chanlocs;
-for i = 1:size(ICA.unmix, 1)
-    ICA.labels{i} = ['IC',num2str(i)];
+    % adjust header for letswave 6
+    dataset.LEP_N1(a).header.history(end).configuration.gui_info.function_name = 'LW_ICA_compute_merged';  
+    dataset.LEP_N1(a).header.history(end).configuration.parameters = dataset.LEP_N1(a).header.history(end).option;  
+    [dataset.LEP_N1(a).header.history(end).configuration.parameters.ICA_um] = dataset.LEP_N1(a).header.history(end).configuration.parameters.unmix_matrix; 
+    [dataset.LEP_N1(a).header.history(end).configuration.parameters.ICA_mm] = dataset.LEP_N1(a).header.history(end).configuration.parameters.mix_matrix; 
+    dataset.LEP_N1(a).header.history(end).configuration.parameters = rmfield(dataset.LEP_N1(a).header.history(end).configuration.parameters, {'unmix_matrix' 'mix_matrix'});
+    header = dataset.LEP_N1(a).header;
+    save(sprintf('%s.lw6', dataset.LEP_N1(a).header.name), 'header');
 end
-ICA.fs = 1/header.xstep;
 
 % unmix data
-ICA.data = [];
-fprintf('unmixing the data: dataset ')
-for d = 1:length(filenames)
-    fprintf('%d ...', d)
-    load(filenames{d});
-    for e = 1:size(data, 1)
-        ICA.data(end + 1, :, :) = ICA.unmix * squeeze(data(e, :, 1, 1, 1, :));        
+fprintf('unmixing data...\n')
+for b = 1:length(dataset.LEP_N1)
+    for e = 1:size(dataset.LEP_N1(b).data, 1)
+        dataset.unmixed_N1(b).name = dataset.LEP_N1(b).name;
+        dataset.unmixed_N1(b).header = dataset.LEP_N1(b).header;
+        dataset.unmixed_N1(b).data(e, :, 1, 1, 1, :) = matrix.unmix * squeeze(dataset.LEP_N1(b).data(e, :, 1, 1, 1, :));        
     end
 end
-ICA.data = permute(ICA.data, [2, 1, 3]);
-fprintf('\n') 
+visual.data = [];
+for c = 1:length(dataset.unmixed_N1)
+    for e = 1:size(dataset.unmixed_N1(c).data, 1)
+        visual.data(end + 1, :, :) = squeeze(dataset.unmixed_N1(c).data(e, :, 1, 1, 1, :));        
+    end
+end
+visual.data = permute(visual.data, [2, 1, 3]);
 
-% determine plotting parameters
-x = (header.xstart : header.xstep : header.xstart + header.datasize(6)*header.xstep - header.xstep)*1000; 
-x_start = round((param.TOI(1) - header.xstart)/header.xstep);
-x_end = round((param.TOI(2) - header.xstart)/header.xstep);
-
-% plot component topographies and spectral content
+% plot component topographies and timecourse
+addpath(genpath([folder.toolbox '\letswave 6']));
+visual.x = (dataset.unmixed_N1(1).header.xstart : dataset.unmixed_N1(1).header.xstep : dataset.unmixed_N1(1).header.xstart + dataset.unmixed_N1(1).header.datasize(6)*dataset.unmixed_N1(1).header.xstep - dataset.unmixed_N1(1).header.xstep)*1000; 
 figure('units','normalized','outerposition',[0 0 1 1]);
 hold on
-for f = 1:size(ICA.unmix, 1)
+for f = 1:size(visual.data, 1)
     % plot the topography
-    subplot(ceil(size(ICA.unmix, 1)/2), 4, (f-1)*2 + 1);
-    topoplot(ICA.matrix(:, f), ICA.chanlocs, 'maplimits', [-3 3], 'shading', 'interp', 'whitebk', 'on', 'electrodes', 'off')
+    subplot(ceil(size(visual.data, 1)/2), 4, (f-1)*2 + 1);
+    topoplot(double(matrix.mix(:, f)'), params.chanlocs, 'maplimits', [-3 3], 'shading', 'interp', 'whitebk', 'on', 'electrodes', 'off')
     set(gca,'color',[1 1 1]);
-    title(ICA.labels{f})
+    title(params.ICA_labels{f})
 
     % plot the timecourse 
-    subplot(ceil(size(ICA.unmix, 1)/2), 4, (f-1)*2 + 2);
-    imagesc(x, 1:size(ICA.data, 2), squeeze(ICA.data(f, :, :)));
+    subplot(ceil(size(visual.data, 1)/2), 4, (f-1)*2 + 2);
+    imagesc(visual.x, 1:size(visual.data, 2), squeeze(visual.data(f, :, :)));
     xlabel('time (ms)');
     ylabel('trial');
 end
-saveas(gcf, sprintf('%s\\figures\\ICA_N1_%s.png', folder.output, AP_info.single_subject(subject_idx).ID));
+saveas(gcf, sprintf('%s\\figures\\ICA_N1_%s.png', folder.output, AP_info(subject_idx).ID));
+
+
+
+% remove artifactual ICs
+fprintf('please perform ICA manually in letswave 6.\n')
+addpath(genpath([folder.toolbox '\letswave 6']));
+letswave
+for f = 1:length(dataset.preprocessed)
+    filenames{f} = sprintf('%s %s.mat', params.suffix{2}, dataset.filtered(f).header.name);
+end
+wait4files(filenames);
+fprintf('\n')
+
+% load dataset with artifactual ICs removed
+fprintf('updating dataset...\n')
+params.prefix = regexp(dataset.filtered(1).header.name, ['(.*)\s+' AP_info(subject_idx).ID], 'tokens');
+params.prefix = params.prefix{1}{1};
+dataset_old = dataset;
+data2load = dir(sprintf('%s*%s*', params.suffix{2}, AP_info(subject_idx).ID));
+dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'filtered');
+dataset_new = dataset;
+[dataset_old.filtered] = dataset_new.filtered;
+dataset = dataset_old;
+clear data2load dataset_old dataset_new
+
+
+
+
+
+
+
+
 
 % identify outcome filenames and wait for them to appear
 for i = 1:length(filenames)
-    filenames_filtered{i} = sprintf('%s %s',param.suffix{3}, filenames{i});
+    filenames_filtered{i} = sprintf('%s %s',params.suffix{3}, filenames{i});
 end
 wait4files(filenames_filtered);
 close(gcf)
@@ -1173,22 +1232,22 @@ for d = 1:length(filenames_filtered)
     % raw data
     option = struct('filename', sprintf('%slw6', filenames{d}(18:end-3)));
     lwdata = FLW_load.get_lwdata(option);
-    option = struct('operation', 'substract', 'xstart', param.baseline(1), 'xend', param.baseline(2), ...
-        'suffix', param.suffix{4},'is_save', 1);
+    option = struct('operation', 'substract', 'xstart', params.baseline(1), 'xend', params.baseline(2), ...
+        'suffix', params.suffix{4},'is_save', 1);
     lwdata = FLW_baseline.get_lwdata(lwdata,option);
 
     % raw re-referenced data
     option = struct('filename', sprintf('%slw6', filenames{d}(8:end-3)));
     lwdata = FLW_load.get_lwdata(option);
-    option = struct('operation', 'substract', 'xstart', param.baseline(1), 'xend', param.baseline(2), ...
-        'suffix', param.suffix{4},'is_save', 1);
+    option = struct('operation', 'substract', 'xstart', params.baseline(1), 'xend', params.baseline(2), ...
+        'suffix', params.suffix{4},'is_save', 1);
     lwdata = FLW_baseline.get_lwdata(lwdata,option);
 
     % filtered data
     option = struct('filename', sprintf('%slw6', filenames_filtered{d}(1:end-3)));
     lwdata = FLW_load.get_lwdata(option);
-    option = struct('operation', 'substract', 'xstart', param.baseline(1), 'xend', param.baseline(2), ...
-        'suffix', param.suffix{4},'is_save', 1);
+    option = struct('operation', 'substract', 'xstart', params.baseline(1), 'xend', params.baseline(2), ...
+        'suffix', params.suffix{4},'is_save', 1);
     lwdata = FLW_baseline.get_lwdata(lwdata,option);
 end
 
@@ -1196,20 +1255,20 @@ end
 for d = 1:length(filenames_filtered)
     % identify EOI
     if contains(filenames_filtered{d}, 'right')
-        eoi(d) = find(strcmp({ICA.chanlocs.labels}, param.EOI{1}));
+        eoi(d) = find(strcmp({ICA.chanlocs.labels}, params.EOI{1}));
     else
-        eoi(d) = find(strcmp({ICA.chanlocs.labels}, param.EOI{2}));
+        eoi(d) = find(strcmp({ICA.chanlocs.labels}, params.EOI{2}));
     end
 
     % extract N1 from unfiltered data 
-    load(sprintf('%s %s', param.suffix{4}, filenames{d}(8:end)))
+    load(sprintf('%s %s', params.suffix{4}, filenames{d}(8:end)))
     data_in(d, :) = squeeze(mean(data(:, eoi(d), 1, 1, 1, :), 1));
     [peak_raw.amplitude(d), peak_raw.latency(d)] = min(data_in(d, x_start:x_end));
     peak_raw.latency(d) = peak_raw.latency(d) + x_start;
     data_topo_raw(d, :) = squeeze(mean(data(:, :, 1, 1, 1, peak_raw.latency(d) - 5: peak_raw.latency(d) + 5), [1, 6]));
 
     % extract N1 from filtered data 
-    load(sprintf('%s %s', param.suffix{4}, filenames_filtered{d}(1:end)))
+    load(sprintf('%s %s', params.suffix{4}, filenames_filtered{d}(1:end)))
     data_filt(d, :) = squeeze(mean(data(:, eoi(d), 1, 1, 1, :), 1));
     [peak_filt.amplitude(d), peak_filt.latency(d)] = min(data_filt(d, x_start:x_end));
     peak_filt.latency(d) = peak_filt.latency(d) + x_start;
@@ -1272,7 +1331,7 @@ dims = [1 40];
 definput = {''};
 input = inputdlg(prompt,dlgtitle,dims,definput);
 AP_info.single_subject(subject_idx).preprocessing.LEP(1).process = '1 - data re-referenced for N1 analysis'; 
-AP_info.single_subject(subject_idx).preprocessing.LEP(1).params.ref = param.ref;
+AP_info.single_subject(subject_idx).preprocessing.LEP(1).params.ref = params.ref;
 AP_info.single_subject(subject_idx).preprocessing.LEP(1).date = sprintf('%s', date);
 AP_info.single_subject(subject_idx).preprocessing.LEP(2).process = '2 - N2P2 component filtered out with ICA'; 
 AP_info.single_subject(subject_idx).preprocessing.LEP(2).params.n_components = AP_info.single_subject(subject_idx).preprocessing.ICA.ICs_kept;
@@ -1281,30 +1340,30 @@ AP_info.single_subject(subject_idx).preprocessing.LEP(2).params.unmix = ICA.unmi
 AP_info.single_subject(subject_idx).preprocessing.LEP(2).params.removed = input;
 AP_info.single_subject(subject_idx).preprocessing.LEP(2).date = sprintf('%s', date);
 AP_info.single_subject(subject_idx).preprocessing.LEP(3).process = '3 - all LEP datasets baseline corrected'; 
-AP_info.single_subject(subject_idx).preprocessing.LEP(3).params.baseline = param.baseline;
+AP_info.single_subject(subject_idx).preprocessing.LEP(3).params.baseline = params.baseline;
 AP_info.single_subject(subject_idx).preprocessing.LEP(3).date = sprintf('%s', date);
 save(output_file, 'AP_info', '-append');
 
-clear param file2process d i filenames filepath option lwdata data header ICA x x_start x_end e f filenames_filtered ...
+clear params file2process d i filenames filepath option lwdata data header ICA x x_start x_end e f filenames_filtered ...
     data_in peak_raw data_topo_raw data_filt peak_filt data_topo_filt ylim prompt dlgtitle dims definput input eoi
 
 %% 12) single-trial LEP analysis: time domain
 % ----- section input -----
-param.prefix = {'bl icfilt ica_all dc ep reref ds notch bandpass dc' 'bl icfilt ica_N1 reref_AFz'};  
-param.suffix = {'butt'};
-param.n_files = 8;
-param.bandpass = [1 30];
-param.peak = {'N1' 'N2' 'P2'};
-param.dataset = {'N1' 'N2P2'};
-param.EOI = {'C5' 'C6' 'Cz'};
-param.mask_threshold = 0.85;
-param.alpha = 0.2;
-param.inverse_default = 300;
-param.colours = [0.5020    0.5020    0.5020; 0.8314    0.1647    0.1647];
-param.TOI_span = [0.14, 0.16, 0.20];
-param.TOI_estimate = [0, 0.300; 0, 0.450; 0, 0.600];
-param.gaussian_size = 20;
-param.gaussian_sigma = 5;
+params.prefix = {'bl icfilt ica_all dc ep reref ds notch bandpass dc' 'bl icfilt ica_N1 reref_AFz'};  
+params.suffix = {'butt'};
+params.n_files = 8;
+params.bandpass = [1 30];
+params.peak = {'N1' 'N2' 'P2'};
+params.dataset = {'N1' 'N2P2'};
+params.EOI = {'C5' 'C6' 'Cz'};
+params.mask_threshold = 0.85;
+params.alpha = 0.2;
+params.inverse_default = 300;
+params.colours = [0.5020    0.5020    0.5020; 0.8314    0.1647    0.1647];
+params.TOI_span = [0.14, 0.16, 0.20];
+params.TOI_estimate = [0, 0.300; 0, 0.450; 0, 0.600];
+params.gaussian_size = 20;
+params.gaussian_sigma = 5;
 % ------------------------- 
 
 % ask for subject number
@@ -1326,25 +1385,25 @@ addpath(genpath([folder.toolbox '\letswave 7']));
 
 % identify LEP datasets to process
 folder.input = uigetdir(pwd, 'Choose the input folder');            
-file2process = [dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix{1}, AP_info.single_subject(subject_idx).ID)); ...
-    dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix{2}, AP_info.single_subject(subject_idx).ID))];
+file2process = [dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, params.prefix{1}, AP_info.single_subject(subject_idx).ID)); ...
+    dir(sprintf('%s\\%s_%s\\%s*%s LEP*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, params.prefix{2}, AP_info.single_subject(subject_idx).ID))];
 
 % determine conditions
 for c = 1:length(AP_info.single_subject(subject_idx).condition)
-    param.conditions{c} = replace(AP_info.single_subject(subject_idx).condition{c}, '_', ' ');
+    params.conditions{c} = replace(AP_info.single_subject(subject_idx).condition{c}, '_', ' ');
 end
 AP_info.single_subject(subject_idx).LEP(1).process = '1 - preprocessed data selected';
-AP_info.single_subject(subject_idx).LEP(1).params.conditions = param.conditions;
+AP_info.single_subject(subject_idx).LEP(1).params.conditions = params.conditions;
 AP_info.single_subject(subject_idx).LEP(1).params.datasets.N1 = {file2process(5:8).name};
 AP_info.single_subject(subject_idx).LEP(1).params.datasets.N2P2 = {file2process(1:4).name};
 AP_info.single_subject(subject_idx).LEP(1).date = sprintf('%s', date);
-NLEP_measures(subject_idx).LEP_avg.conditions = param.conditions;
+NLEP_measures(subject_idx).LEP_avg.conditions = params.conditions;
 
 % prepare data
 fprintf('preparing LEP data ...\n')
 data.N1.cond1 = []; data.N2P2.cond1 = []; 
 data.N1.cond2 = []; data.N2P2.cond2 = []; 
-if length(file2process) == param.n_files
+if length(file2process) == params.n_files
     % prepare data
     for f = 1:length(file2process)
         % load the dataset
@@ -1352,22 +1411,22 @@ if length(file2process) == param.n_files
         lwdata = FLW_load.get_lwdata(option);
 
         % bandpass filter 
-        option = struct('filter_type', 'bandpass', 'high_cutoff', param.bandpass(2), 'low_cutoff', param.bandpass(1),'filter_order', 4, 'suffix', param.suffix{1}, 'is_save', 0);
+        option = struct('filter_type', 'bandpass', 'high_cutoff', params.bandpass(2), 'low_cutoff', params.bandpass(1),'filter_order', 4, 'suffix', params.suffix{1}, 'is_save', 0);
         lwdata = FLW_butterworth_filter.get_lwdata(lwdata,option);
 
         % split data according to conditions    
-        if contains(file2process(f).name, param.prefix{2})          % N1
+        if contains(file2process(f).name, params.prefix{2})          % N1
             % identify EOI
             if contains(file2process(f).name, 'right')
-                eoi = find(strcmp({lwdata.header.chanlocs.labels}, param.EOI{1}));
-                eoi_all{f} = param.EOI{1};
+                eoi = find(strcmp({lwdata.header.chanlocs.labels}, params.EOI{1}));
+                eoi_all{f} = params.EOI{1};
             else
-                eoi = find(strcmp({lwdata.header.chanlocs.labels}, param.EOI{2}));
-                eoi_all{f} = param.EOI{2};
+                eoi = find(strcmp({lwdata.header.chanlocs.labels}, params.EOI{2}));
+                eoi_all{f} = params.EOI{2};
             end
             
             % subset the data and save to a datase                  
-            if contains(file2process(f).name, param.conditions{1})
+            if contains(file2process(f).name, params.conditions{1})
                 for d = 1:lwdata.header.datasize(1)
                     data.N1.cond1(end+1, :) = squeeze(lwdata.data(d, eoi, 1, 1, 1, :));
                 end
@@ -1378,11 +1437,11 @@ if length(file2process) == param.n_files
             end
         else                                                        % N2 and P2
             % identify EOI
-            eoi = find(strcmp({lwdata.header.chanlocs.labels}, param.EOI{3}));
-            eoi_all{f} = param.EOI{3};
+            eoi = find(strcmp({lwdata.header.chanlocs.labels}, params.EOI{3}));
+            eoi_all{f} = params.EOI{3};
 
             % subset the data and save to a datase                  
-            if contains(file2process(f).name, param.conditions{1})
+            if contains(file2process(f).name, params.conditions{1})
                 for d = 1:lwdata.header.datasize(1)
                     data.N2P2.cond1(end+1, :) = squeeze(lwdata.data(d, eoi, 1, 1, 1, :));
                 end
@@ -1401,24 +1460,24 @@ end
 % perform CWT filtering
 fprintf('filtering using CWT masking ...\n')
 addpath(genpath([folder.toolbox '\STEP']));
-param.freq = param.bandpass(1):1:param.bandpass(2);
-param.fs = 1/lwdata.header.xstep;
-param.timepoints = lwdata.header.xstart + (0:lwdata.header.datasize(6) + lwdata.header.xstart) * lwdata.header.xstep;
+params.freq = params.bandpass(1):1:params.bandpass(2);
+params.fs = 1/lwdata.header.xstep;
+params.timepoints = lwdata.header.xstart + (0:lwdata.header.datasize(6) + lwdata.header.xstart) * lwdata.header.xstep;
 fig1 = figure('Name', 'CWT filters', 'Position', [100, 100, 750, 550]);
-for p = 1:length(param.dataset)
-    for c = 1:length(param.conditions)
+for p = 1:length(params.dataset)
+    for c = 1:length(params.conditions)
         % define inputs
-        statement = sprintf('data_in = data.%s.cond%d(:, :);', param.dataset{p}, c);
+        statement = sprintf('data_in = data.%s.cond%d(:, :);', params.dataset{p}, c);
         eval(statement)
         data_in = permute(data_in, [2,1]);         
 
         % compute the mask
-        P_mask(p, c, :, :) = model_generation(data_in, param.freq, param.fs, param.timepoints', param.mask_threshold);
-        P_mask(p, c, :, 1:find(param.timepoints == 0)) = 0;
+        P_mask(p, c, :, :) = model_generation(data_in, params.freq, params.fs, params.timepoints', params.mask_threshold);
+        P_mask(p, c, :, 1:find(params.timepoints == 0)) = 0;
 
         % filter using the mask
-        data_out = tf_filtering(data_in, param.freq, param.fs, squeeze(P_mask(p, c, :, :)));
-        statement = sprintf('data_filtered.%s.cond%d(:, :) = data_out'';', param.dataset{p}, c);
+        data_out = tf_filtering(data_in, params.freq, params.fs, squeeze(P_mask(p, c, :, :)));
+        statement = sprintf('data_filtered.%s.cond%d(:, :) = data_out'';', params.dataset{p}, c);
         eval(statement)
 
         % plot grand average filtered vs. unfiltered data
@@ -1429,12 +1488,12 @@ for p = 1:length(param.dataset)
         visual.sem(2, :) = visual.data(2, :) + std(data_out', 0, 1) / sqrt(size(data_out, 2)); 
         visual.CI_upper(1, :) = visual.data(1, :) + t * visual.sem(1, :); visual.CI_lower(1, :) = visual.data(1, :) - t * visual.sem(1, :); 
         visual.CI_upper(2, :) = visual.data(2, :) + t * visual.sem(2, :); visual.CI_lower(2, :) = visual.data(2, :) - t * visual.sem(2, :); 
-        subplot(length(param.dataset), length(param.conditions), (p-1)*length(param.conditions) + c)
+        subplot(length(params.dataset), length(params.conditions), (p-1)*length(params.conditions) + c)
         hold on
-        plot_ERP(visual.data, visual.CI_upper, visual.CI_lower, param.timepoints, 'labels', {'unfiltered' 'CWT filtered'}, ...
-            'colours', param.colours, 'alpha', param.alpha, 'shading', 'off', 'legend_loc', 'southwest');
-        title(sprintf('%s: %s', param.dataset{p}, param.conditions{c}), 'fontsize', 16, 'fontweight', 'bold')
-        if (p-1)*length(param.dataset) + c ~= length(param.dataset) * length(param.conditions)
+        plot_ERP(visual.data, visual.CI_upper, visual.CI_lower, params.timepoints, 'labels', {'unfiltered' 'CWT filtered'}, ...
+            'colours', params.colours, 'alpha', params.alpha, 'shading', 'off', 'legend_loc', 'southwest');
+        title(sprintf('%s: %s', params.dataset{p}, params.conditions{c}), 'fontsize', 16, 'fontweight', 'bold')
+        if (p-1)*length(params.dataset) + c ~= length(params.dataset) * length(params.conditions)
             legend('off');
         end
     end
@@ -1450,8 +1509,8 @@ saveas(fig1, sprintf('%s\\figures\\CWT_%s.png', folder.output, AP_info.single_su
 % extract single-trial peak values
 fprintf('extracting peak measures ...\n')
 fig2 = figure('Name', 'PCA regressors', 'Position', [50, 30, 550, 750]);
-for p = 1:length(param.peak)
-    for c = 1:length(param.conditions)
+for p = 1:length(params.peak)
+    for c = 1:length(params.conditions)
         % extract single-trial data and average for template, determine
         % peak polarity
         switch p
@@ -1483,8 +1542,8 @@ for p = 1:length(param.peak)
 
         %% identify and save average peak measures 
         % select a narrower window around the average peak 
-        select_EEG(sprintf('%s: %s', param.peak{p}, param.conditions{c}), param.timepoints, data_avg, ...
-            1/lwdata.header.xstep, param.TOI_span(p), 0);
+        select_EEG(sprintf('%s: %s', params.peak{p}, params.conditions{c}), params.timepoints, data_avg, ...
+            1/lwdata.header.xstep, params.TOI_span(p), 0);
 
         % compute window limits and extract the average peak values 
         x_peak_start = round((limits(1) - lwdata.header.xstart)/lwdata.header.xstep);
@@ -1518,8 +1577,8 @@ for p = 1:length(param.peak)
         
         %% prepare template data
         % make sure the peak window is in the main analysed window 
-        x_start = round((param.TOI_estimate(p, 1) - lwdata.header.xstart)/lwdata.header.xstep);
-        x_end = round((param.TOI_estimate(p, 2) - lwdata.header.xstart)/lwdata.header.xstep);
+        x_start = round((params.TOI_estimate(p, 1) - lwdata.header.xstart)/lwdata.header.xstep);
+        x_end = round((params.TOI_estimate(p, 2) - lwdata.header.xstart)/lwdata.header.xstep);
         if x_start > x_peak_start
             x_start = x_peak_start;
         end
@@ -1552,14 +1611,14 @@ for p = 1:length(param.peak)
             end
             inverse_point = min(find(idx_flip));
             if isempty(inverse_point)
-                inverse_point = param.inverse_default;
+                inverse_point = params.inverse_default;
             end
         end
                        
         % select N2 or P2 component, if necessary, and smoothen using a
         % Gaussian filter
-        x_gaussian = linspace(-param.gaussian_size / 2, param.gaussian_size / 2, param.gaussian_size);       
-        gaussian_filter = exp(-x_gaussian .^ 2 / (2 * param.gaussian_sigma ^ 2));       % sigma = std
+        x_gaussian = linspace(-params.gaussian_size / 2, params.gaussian_size / 2, params.gaussian_size);       
+        gaussian_filter = exp(-x_gaussian .^ 2 / (2 * params.gaussian_sigma ^ 2));       % sigma = std
         gaussian_filter = gaussian_filter / sum(gaussian_filter);                       % normalize the filter
         if p == 2                                                                       % suppress data relative to the inversion, depending on peak 
             idx_flip(inverse_point:end) = 1;
@@ -1579,8 +1638,8 @@ for p = 1:length(param.peak)
                 AP_info.single_subject(subject_idx).LEP(3).params.TOI_window.N2(c, :) = [x_start, x_end];
                 AP_info.single_subject(subject_idx).LEP(3).params.inversion_point(c) = inverse_point*lwdata.header.xstep;
                 if c == 1
-                    AP_info.single_subject(subject_idx).LEP(3).params.gaussian.width = param.gaussian_size;
-                    AP_info.single_subject(subject_idx).LEP(3).params.gaussian.sigma = param.gaussian_sigma;
+                    AP_info.single_subject(subject_idx).LEP(3).params.gaussian.width = params.gaussian_size;
+                    AP_info.single_subject(subject_idx).LEP(3).params.gaussian.sigma = params.gaussian_sigma;
                 end
             case 3
                 AP_info.single_subject(subject_idx).LEP(3).params.TOI_window.P2(c, :) = [x_start, x_end];
@@ -1588,7 +1647,7 @@ for p = 1:length(param.peak)
 
         %% compute regressors based on the template
         % prepare inputs
-        t = param.timepoints(x_start + 1 : x_end + 1);  % time vector
+        t = params.timepoints(x_start + 1 : x_end + 1);  % time vector
         fs = 1/lwdata.header.xstep;                     % sampling rate
         number_trial = round(fs*0.05);                  % the default latency jitter limit
         if fs > 500
@@ -1630,19 +1689,19 @@ for p = 1:length(param.peak)
 
         % plot regressors
         figure(fig2)
-        subplot(length(param.peak), length(param.conditions), (p-1)*length(param.conditions) + c)
+        subplot(length(params.peak), length(params.conditions), (p-1)*length(params.conditions) + c)
         hold on
         h1 = plot(t, squeeze(regressors{p, c}(:, 2))','g','linewidth',0.8);
         h2 = plot(t, squeeze(regressors{p, c}(:, 3))','b','linewidth',0.8);
         h3 = plot(t, squeeze(regressors{p, c}(:, 1))','r','linewidth',2.5);
-        title(sprintf('%s: %s', param.peak{p}, param.conditions{c}))
+        title(sprintf('%s: %s', params.peak{p}, params.conditions{c}))
         if p == 3
             xlabel('time (s)')
         end
         if c == 1
             ylabel('amplitude (\muV)')
         end
-        if (p-1)*length(param.conditions) + c == length(param.peak)*length(param.conditions)
+        if (p-1)*length(params.conditions) + c == length(params.peak)*length(params.conditions)
             lgd = legend([h3, h1, h2], {'waveform' 'temporal jitter' 'morphology'});
             lgd.Orientation = 'horizontal'; 
             lgd.Position = [0.5, 0.99, 0.1, 0.1];
@@ -1674,7 +1733,7 @@ for p = 1:length(param.peak)
 
         %% extract single-trial peak measures
         % identify peak window
-        peak_duration = round(param.fs*param.TOI_span(p));
+        peak_duration = round(params.fs*params.TOI_span(p));
         peak_limits(1) = max([1 round(x_peak - peak_duration/2)]);
         peak_limits(2) = min([size(fits, 1) - 1, round(x_peak + peak_duration/2)]);
 
@@ -1696,28 +1755,28 @@ for p = 1:length(param.peak)
                     if length(Pmin) > 0
                         y_peak_i = min(Pmin(2,:));
                         x_peak_i = t(find(fits(:,i) == y_peak_i));
-                        [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                        [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                     elseif length(Pmin) == 0
                         if length(Pmax) == 0
                             y_peak_i = NaN; x_peak_i = NaN; FWHM = NaN; slope = NaN; energy = NaN;
                         else
                             y_peak_i = max(Pmax(2,:));
                             x_peak_i = t(find(fits(:,i) == y_peak_i));
-                            [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                            [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                         end
                     end 
                 elseif corr_i(1,2) < 0
                     if length(Pmax) > 0
                         y_peak_i = max(Pmax(2,:));
                         x_peak_i = t(find(fits(:,i) == y_peak_i));
-                        [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                        [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                     elseif length(Pmax) == 0
                         if length(Pmin) == 0
                             y_peak_i = NaN; x_peak_i = NaN; FWHM = NaN; slope = NaN; energy = NaN;
                         else
                             y_peak_i = min(Pmin(2,:));
                             x_peak_i = t(find(fits(:,i) == y_peak_i));
-                            [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                            [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                         end
                     end
                 end            
@@ -1726,28 +1785,28 @@ for p = 1:length(param.peak)
                     if length(Pmax) > 0
                         y_peak_i = max(Pmax(2,:));
                         x_peak_i = t(find(fits(:,i) == y_peak_i));
-                        [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                        [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                     elseif length(Pmax)==0
                         if length(Pmin)==0
                             y_peak_i = NaN; x_peak_i = NaN; FWHM = NaN; slope = NaN; energy = NaN;
                         else
                             y_peak_i = min(Pmin(2,:));
                             x_peak_i = t(find(fits(:,i) == y_peak_i));
-                            [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                            [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                         end
                     end   
                 elseif corr_i(1,2) < 0
                     if length(Pmin) > 0
                         y_peak_i = min(Pmin(2,:));
                         x_peak_i = t(find(fits(:,i) == y_peak_i));
-                        [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                        [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                     elseif length(Pmin) == 0
                         if length(Pmax) == 0
                             y_peak_i = NaN; x_peak_i = NaN; FWHM = NaN; slope = NaN; energy = NaN;
                         else
                             y_peak_i = max(Pmax(2,:));
                             x_peak_i = t(find(fits(:,i) == y_peak_i));
-                            [FWHM, slope, energy] = width_FWHM(t, param.fs, fits(:,i), y_peak_i, x_peak_i);
+                            [FWHM, slope, energy] = width_FWHM(t, params.fs, fits(:,i), y_peak_i, x_peak_i);
                         end
                     end
                 end
@@ -1768,7 +1827,7 @@ saveas(fig2, sprintf('%s\\figures\\regressors_%s.png', folder.output, AP_info.si
 
 % endcode and save NLEP info
 AP_info.single_subject(subject_idx).LEP(3).process = '3 - single-trial peak values extracted';
-AP_info.single_subject(subject_idx).LEP(3).params.conditions = param.conditions;
+AP_info.single_subject(subject_idx).LEP(3).params.conditions = params.conditions;
 AP_info.single_subject(subject_idx).LEP(3).params.method = 'MLR with dispersion term';
 AP_info.single_subject(subject_idx).LEP(3).params.regressors = regressors;
 AP_info.single_subject(subject_idx).LEP(3).params.coefficients = coefficients;
@@ -1777,7 +1836,7 @@ AP_info.single_subject(subject_idx).LEP(3).date = sprintf('%s', date);
 save(output_file, 'AP_info', '-append');
 
 % endcode and save NLEP_measures
-NLEP_measures(subject_idx).LEP_ST.conditions = param.conditions;
+NLEP_measures(subject_idx).LEP_ST.conditions = params.conditions;
 NLEP_measures(subject_idx).LEP_ST.amplitude = LEP_ST.amplitude;
 NLEP_measures(subject_idx).LEP_ST.latency = LEP_ST.latency;
 NLEP_measures(subject_idx).LEP_ST.FWHM = LEP_ST.FWHM;
@@ -1787,7 +1846,7 @@ save(output_file, 'NLEP_measures', '-append');
 
 % save data to output structure
 NLEP_data.LEP(subject_idx).ID = AP_info.single_subject(subject_idx).ID;
-NLEP_data.LEP(subject_idx).conditions = param.conditions;
+NLEP_data.LEP(subject_idx).conditions = params.conditions;
 NLEP_data.LEP(subject_idx).unfiltered.N1 = data.N1;
 NLEP_data.LEP(subject_idx).unfiltered.N2P2 = data.N2P2;
 NLEP_data.LEP(subject_idx).CWT_filtered.N1 = data_filtered.N1;
@@ -1797,7 +1856,7 @@ save(output_file, 'NLEP_data', '-append');
 clear c d f i r j k p t x y file2process option lwdata eoi statement data_in data_out visual x_peak_start x_peak_end x_start x_end negative ...
     peak_sample data_template fs number_trial idx_reg T ur peak_point data_PCA data_start reg n_func n_trials fmult fits ...
     peak_duration peak_limits limits corr_i x_gaussian gaussian_filter data_avg idx_flip tmax tmin vmax vmin data_ST energy  eoi_all ...
-    fig1 fig2 FWHM P_mask PCA Pmax Pmin slope template val W Y x_peak x_peak_i y_peak y_peak_i param coefficients regressors fit ...
+    fig1 fig2 FWHM P_mask PCA Pmax Pmin slope template val W Y x_peak x_peak_i y_peak y_peak_i params coefficients regressors fit ...
     LEP_ST data data_filtered inverse_point lgd h1 h2 h3
 fprintf('done.\n')
 
@@ -1811,13 +1870,13 @@ end
 
 %% 13) average LEP analysis: time domain
 % ----- section input -----
-param.prefix_N1 = 'bl reref_Afz';   
-param.EOI_N1 = {'C5' 'C6'};
-param.n_files = 4;
-param.peak = {'N1' 'N2' 'P2'}; 
-param.processed = {'unfiltered' 'CWT_filtered'};
-param.dataset = {{'N1' 'N2P2' 'N1_raw'}, {'N1' 'N2P2'}}; 
-param.TOI_span = [0.14, 0.16, 0.20];
+params.prefix_N1 = 'bl reref_Afz';   
+params.EOI_N1 = {'C5' 'C6'};
+params.n_files = 4;
+params.peak = {'N1' 'N2' 'P2'}; 
+params.processed = {'unfiltered' 'CWT_filtered'};
+params.dataset = {{'N1' 'N2P2' 'N1_raw'}, {'N1' 'N2P2'}}; 
+params.TOI_span = [0.14, 0.16, 0.20];
 % ------------------------- 
 
 % load output structures
@@ -1834,9 +1893,9 @@ for subject_idx = 1:length(AP_info.single_subject)
     fprintf(' %d ...', subject_idx)
 
     % identify datasets and conditions 
-    file2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix_N1));
+    file2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, params.prefix_N1));
     conditions = NLEP_data.LEP(subject_idx).conditions;
-    if ~length(file2process) == param.n_files
+    if ~length(file2process) == params.n_files
         fprintf('ERROR: incorrect number of datasets (%d) found in the directory!\n', length(file2process));
         return;
     end
@@ -1858,9 +1917,9 @@ for subject_idx = 1:length(AP_info.single_subject)
 
         % identify EOI
         if contains(file2process(d).name, 'right')
-            eoi(d) = find(strcmp({header.chanlocs.labels}, param.EOI_N1{1}));
+            eoi(d) = find(strcmp({header.chanlocs.labels}, params.EOI_N1{1}));
         else
-            eoi(d) = find(strcmp({header.chanlocs.labels}, param.EOI_N1{2}));
+            eoi(d) = find(strcmp({header.chanlocs.labels}, params.EOI_N1{2}));
         end
 
         % append N1 from raw data 
@@ -1882,11 +1941,11 @@ for subject_idx = 1:length(AP_info.single_subject)
     fprintf(' %d ...', subject_idx)
 
     % cycle through all datasets and conditions
-    for c = 1:length(param.processed)
-        for d = 1:length(param.dataset{c})
+    for c = 1:length(params.processed)
+        for d = 1:length(params.dataset{c})
             for e = 1:length(NLEP_data.LEP(subject_idx).conditions)
                 % subset data
-                statement = sprintf('data = NLEP_data.LEP(subject_idx).%s.%s.cond%d;', param.processed{c}, param.dataset{c}{d}, e);
+                statement = sprintf('data = NLEP_data.LEP(subject_idx).%s.%s.cond%d;', params.processed{c}, params.dataset{c}{d}, e);
                 eval(statement)
 
                 % calculate average values per condition 
@@ -1910,9 +1969,9 @@ for subject_idx = 1:length(AP_info.single_subject)
             end
 
             % append to the data structure
-            statement = sprintf('NLEP_data.LEP(subject_idx).%s.%s.average_cond = average_cond;', param.processed{c}, param.dataset{c}{d});
+            statement = sprintf('NLEP_data.LEP(subject_idx).%s.%s.average_cond = average_cond;', params.processed{c}, params.dataset{c}{d});
             eval(statement)
-            statement = sprintf('NLEP_data.LEP(subject_idx).%s.%s.average_block = average_block;', param.processed{c}, param.dataset{c}{d});
+            statement = sprintf('NLEP_data.LEP(subject_idx).%s.%s.average_block = average_block;', params.processed{c}, params.dataset{c}{d});
             eval(statement)
         end
     end
@@ -1929,7 +1988,7 @@ for subject_idx = 7%1:length(NLEP_info.single_subject)
     set(fig, 'Position', [50, 30, 750, 750])
 
     % extract peak values for every dataset and condition
-    for p = 1:length(param.peak)
+    for p = 1:length(params.peak)
         for c = 1:length(NLEP_data.LEP(subject_idx).conditions)
             % subset data
             data = []; colour = [];
@@ -1966,15 +2025,15 @@ for subject_idx = 7%1:length(NLEP_info.single_subject)
             end
             
             % manually choose TOI
-            data_name = sprintf('%s: %s - %s', NLEP_data.LEP(subject_idx).ID, param.peak{p}, NLEP_data.LEP(subject_idx).conditions{c});
+            data_name = sprintf('%s: %s - %s', NLEP_data.LEP(subject_idx).ID, params.peak{p}, NLEP_data.LEP(subject_idx).conditions{c});
             time_vector = header.xstart + (1:header.datasize(6))*header.xstep; 
-            select_EEG(data_name, time_vector, data, 1/header.xstep, param.TOI_span(p), 0, 'colour', colour)
+            select_EEG(data_name, time_vector, data, 1/header.xstep, params.TOI_span(p), 0, 'colour', colour)
 
             % extract peak measures from all datasets 
             x_start = round((limits(1) - header.xstart)/header.xstep);
             x_end = round((limits(2) - header.xstart)/header.xstep);
             for d = 1:size(data, 1)
-                if contains(param.peak{p}, 'N')
+                if contains(params.peak{p}, 'N')
                     [y_peak(d), x_sample] = min(data(d, x_start:x_end));
                 else
                     [y_peak(d), x_sample] = max(data(d, x_start:x_end));
@@ -1985,38 +2044,38 @@ for subject_idx = 7%1:length(NLEP_info.single_subject)
             % fill in NLEP_measures
             if p == 1
                 % raw data
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.amplitude(c, [1:2]) = y_peak([1:2]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.amplitude(c, [1:2]) = y_peak([1:2]);', params.peak{p});
                 eval(statement)
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.latency(c, [1:2]) = x_peak([1:2]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.latency(c, [1:2]) = x_peak([1:2]);', params.peak{p});
                 eval(statement)
 
                 % ICA filtered data
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.ICA_filtered.amplitude(c, [1:2]) = y_peak([3:4]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.ICA_filtered.amplitude(c, [1:2]) = y_peak([3:4]);', params.peak{p});
                 eval(statement)
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.ICA_filtered.latency(c, [1:2]) = x_peak([3:4]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.ICA_filtered.latency(c, [1:2]) = x_peak([3:4]);', params.peak{p});
                 eval(statement)
 
                 % CWT filtered data
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.amplitude(c, [1:2]) = y_peak([5:6]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.amplitude(c, [1:2]) = y_peak([5:6]);', params.peak{p});
                 eval(statement)
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.latency(c, [1:2]) = x_peak([5:6]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.latency(c, [1:2]) = x_peak([5:6]);', params.peak{p});
                 eval(statement)                    
             else
                 % raw data
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.amplitude(c, [1:2]) = y_peak([1:2]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.amplitude(c, [1:2]) = y_peak([1:2]);', params.peak{p});
                 eval(statement)
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.latency(c, [1:2]) = x_peak([1:2]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.raw.latency(c, [1:2]) = x_peak([1:2]);', params.peak{p});
                 eval(statement)
 
                 % CWT filtered data
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.amplitude(c, [1:2]) = y_peak([3:4]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.amplitude(c, [1:2]) = y_peak([3:4]);', params.peak{p});
                 eval(statement)
-                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.latency(c, [1:2]) = x_peak([3:4]);', param.peak{p});
+                statement = sprintf('NLEP_measures(subject_idx).LEP_avg.%s.CWT_filtered.latency(c, [1:2]) = x_peak([3:4]);', params.peak{p});
                 eval(statement) 
             end
 
             % update NLEP_info
-            statement = sprintf('NLEP_info.single_subject(subject_idx).LEP(4).params.TOI_%s(c, :) = limits;', param.peak{p});
+            statement = sprintf('NLEP_info.single_subject(subject_idx).LEP(4).params.TOI_%s(c, :) = limits;', params.peak{p});
             eval(statement)
 
             % update output figure
@@ -2049,16 +2108,16 @@ for subject_idx = 7%1:length(NLEP_info.single_subject)
     figure_counter = figure_counter + 1;
 end
 
-clear param subject_idx file2process b c d e p t data header eoi average_cond data_block average_block conditions ...
+clear params subject_idx file2process b c d e p t data header eoi average_cond data_block average_block conditions ...
     fig figure_counter statement data_name time_vector limits x_start x_end x_peak y_peak x_sample y_lims r colour
 
 %% 14) RS-EEG analysis: spectral decomposition, sensor space
 % ----- section input -----
-param.prefix_data = {'icfilt ica_all chunked' 'icfilt ica_all RS'};
-param.foi_limits = [5, 80];
-param.eoi_visual = 'F3'; 
-param.eoi_target = {'AF3' 'AFz' 'AF4' 'F3' 'F1' 'F2' 'F4'};
-param.eoi_ctrl = {'PO3' 'POz' 'PO4' 'P3' 'P1' 'P2' 'P4'};
+params.prefix_data = {'icfilt ica_all chunked' 'icfilt ica_all RS'};
+params.foi_limits = [5, 80];
+params.eoi_visual = 'F3'; 
+params.eoi_target = {'AF3' 'AFz' 'AF4' 'F3' 'F1' 'F2' 'F4'};
+params.eoi_ctrl = {'PO3' 'POz' 'PO4' 'P3' 'P1' 'P2' 'P4'};
 % ------------------------- 
 % set directories and load info structure
 if ~exist("folder")
@@ -2083,8 +2142,8 @@ ft_defaults;
 figure_counter = 1; 
 for subject_idx = 1:length(AP_info.single_subject)  
     % identify RS-EEG data 
-    files2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix_data{1}));
-    files2process = [files2process; dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, param.prefix_data{2}))];
+    files2process = dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, params.prefix_data{1}));
+    files2process = [files2process; dir(sprintf('%s\\%s_%s\\%s*.mat', folder.input, study, AP_info.single_subject(subject_idx).ID, params.prefix_data{2}))];
 
     % provide update 
     fprintf('subject %d - %d datasets found in the input directory\n', subject_idx, length(files2process))
@@ -2128,7 +2187,7 @@ for subject_idx = 1:length(AP_info.single_subject)
             % extract original spectra
             cfg = [];
             cfg.output = 'pow';
-            cfg.foilim = param.foi_limits;  
+            cfg.foilim = params.foi_limits;  
             cfg.pad = 'nextpow2'; 
             cfg.method = 'irasa';    
             cfg.output = 'original';
@@ -2177,7 +2236,7 @@ for subject_idx = 1:length(AP_info.single_subject)
         % average PSD - extract original spectra
         cfg = [];
         cfg.output = 'pow';
-        cfg.foilim = param.foi_limits;  
+        cfg.foilim = params.foi_limits;  
         cfg.pad = 'nextpow2'; 
         cfg.method = 'irasa';    
         cfg.output = 'original';
@@ -2228,7 +2287,7 @@ for subject_idx = 1:length(AP_info.single_subject)
         save(output_file, 'NLEP_measures', '-append');
 
         % identify eoi for plotting
-        eoi = find(strcmp({header.chanlocs.labels}, param.eoi_visual));
+        eoi = find(strcmp({header.chanlocs.labels}, params.eoi_visual));
 
         % update output figure
         figure(figure_counter);
@@ -2318,10 +2377,10 @@ for subject_idx = 1:length(AP_info.single_subject)
 end
 
 % compute averages for target and control regions
-if length(param.eoi_target) == length(param.eoi_ctrl)
-    for e = 1:length(param.eoi_target)
-        eoi_target(e) = find(strcmp({header.chanlocs.labels}, param.eoi_target{e}));
-        eoi_ctrl(e) = find(strcmp({header.chanlocs.labels}, param.eoi_ctrl{e}));
+if length(params.eoi_target) == length(params.eoi_ctrl)
+    for e = 1:length(params.eoi_target)
+        eoi_target(e) = find(strcmp({header.chanlocs.labels}, params.eoi_target{e}));
+        eoi_ctrl(e) = find(strcmp({header.chanlocs.labels}, params.eoi_ctrl{e}));
     end
 else
     fprintf('Numbers of target and control electrodes do not match!')
@@ -2341,20 +2400,20 @@ end
 
 % save slopes and clean
 save(output_file, 'slopes', '-append');
-clear param figure_counter next_subject files2process name_idx a b c d e f g h p PSD PSD_st PSD_avg PSD_data PSD_freq answer ...
+clear params figure_counter next_subject files2process name_idx a b c d e f g h p PSD PSD_st PSD_avg PSD_data PSD_freq answer ...
     cfg data data_avg data_ft data_trial eoi fig freq header lgd name PSD_measures ready relax subject_idx idx n_trials idx ...
     eoi_ctrl eoi_target data_ready data_relax condition slopes
 
 %% 15) export to R for statistics and visualization
 % ----- section input -----
-param.LEP.dataset = {'N1' 'N2P2'};
-param.LEP.processing = {'unfiltered' 'CWT_filtered'};
-param.LEP.peak = {'N1' 'N2' 'P2'}; 
-param.LEP.EOI = {'C5' 'C6' 'Cz'};
-param.LEP.ref = {'AFz' 'avg'};
-param.topo_prefix = {'bl icfilt ica_N1 reref_AFz' 'bl icfilt ica_all'};
-param.RS.condition = {'relaxed' 'ready'};
-param.RS.area = {'target' 'control'};
+params.LEP.dataset = {'N1' 'N2P2'};
+params.LEP.processing = {'unfiltered' 'CWT_filtered'};
+params.LEP.peak = {'N1' 'N2' 'P2'}; 
+params.LEP.EOI = {'C5' 'C6' 'Cz'};
+params.LEP.ref = {'AFz' 'avg'};
+params.topo_prefix = {'bl icfilt ica_N1 reref_AFz' 'bl icfilt ica_all'};
+params.RS.condition = {'relaxed' 'ready'};
+params.RS.area = {'target' 'control'};
 % ------------------------- 
 
 % re-set directories and load output structures
@@ -2410,7 +2469,7 @@ for a = 1:length(AP_info.single_subject)
         % time = block 1 / block 2
         for c = 1:2  
             % LEP peak
-            for d = 1:length(param.LEP.peak)
+            for d = 1:length(params.LEP.peak)
                 % single trials
                 for e = find(NLEP_data.LEP(a).blocks{b} == c)
                     % subject 
@@ -2448,21 +2507,21 @@ for a = 1:length(AP_info.single_subject)
                     NLEP_table4stats.time(row_counter) = c;
     
                     % average LEP measures
-                    NLEP_table4stats.peak{row_counter} = param.LEP.peak{d};
+                    NLEP_table4stats.peak{row_counter} = params.LEP.peak{d};
                     if d == 1
                         if contains(NLEP_data.LEP(a).conditions{b}, 'right')
-                            NLEP_table4stats.EOI{row_counter} = param.LEP.EOI{1};
+                            NLEP_table4stats.EOI{row_counter} = params.LEP.EOI{1};
                         else
-                            NLEP_table4stats.EOI{row_counter} = param.LEP.EOI{2};
+                            NLEP_table4stats.EOI{row_counter} = params.LEP.EOI{2};
                         end
-                        NLEP_table4stats.reference{row_counter} = param.LEP.ref{1};
+                        NLEP_table4stats.reference{row_counter} = params.LEP.ref{1};
                     else
-                        NLEP_table4stats.EOI{row_counter} = param.LEP.EOI{3};
-                        NLEP_table4stats.reference{row_counter} = param.LEP.ref{2};
+                        NLEP_table4stats.EOI{row_counter} = params.LEP.EOI{3};
+                        NLEP_table4stats.reference{row_counter} = params.LEP.ref{2};
                     end
-                    statement = sprintf('NLEP_table4stats.amplitude_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.amplitude(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.amplitude_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.amplitude(b, c);', params.LEP.peak{d});
                     eval(statement)
-                    statement = sprintf('NLEP_table4stats.latency_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.latency(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.latency_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.latency(b, c);', params.LEP.peak{d});
                     eval(statement)
                     if d == 1
                         NLEP_table4stats.amplitude_avg_ICA(row_counter) = NLEP_measures(a).LEP_avg.N1.ICA_filtered.amplitude(b, c);
@@ -2471,9 +2530,9 @@ for a = 1:length(AP_info.single_subject)
                         NLEP_table4stats.amplitude_avg_ICA(row_counter) = NaN;
                         NLEP_table4stats.latency_avg_ICA(row_counter) = NaN;
                     end
-                    statement = sprintf('NLEP_table4stats.amplitude_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.amplitude(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.amplitude_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.amplitude(b, c);', params.LEP.peak{d});
                     eval(statement)
-                    statement = sprintf('NLEP_table4stats.latency_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.latency(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.latency_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.latency(b, c);', params.LEP.peak{d});
                     eval(statement)
 
                     % single trial LEP measures
@@ -2535,7 +2594,7 @@ for a = 1:length(AP_info.single_subject)
         % time = block 1 / block 2
         for c = 1:2  
             % LEP peak
-            for d = 1:length(param.LEP.peak)
+            for d = 1:length(params.LEP.peak)
                 % single trials
                 for e = find(NLEP_data.LEP(a).blocks{b} == c)
                     % subject 
@@ -2573,21 +2632,21 @@ for a = 1:length(AP_info.single_subject)
                     NLEP_table4stats.time(row_counter) = c;
     
                     % average LEP measures
-                    NLEP_table4stats.peak{row_counter} = param.LEP.peak{d};
+                    NLEP_table4stats.peak{row_counter} = params.LEP.peak{d};
                     if d == 1
                         if contains(NLEP_data.LEP(a).conditions{b}, 'right')
-                            NLEP_table4stats.EOI{row_counter} = param.LEP.EOI{1};
+                            NLEP_table4stats.EOI{row_counter} = params.LEP.EOI{1};
                         else
-                            NLEP_table4stats.EOI{row_counter} = param.LEP.EOI{2};
+                            NLEP_table4stats.EOI{row_counter} = params.LEP.EOI{2};
                         end
-                        NLEP_table4stats.reference{row_counter} = param.LEP.ref{1};
+                        NLEP_table4stats.reference{row_counter} = params.LEP.ref{1};
                     else
-                        NLEP_table4stats.EOI{row_counter} = param.LEP.EOI{3};
-                        NLEP_table4stats.reference{row_counter} = param.LEP.ref{2};
+                        NLEP_table4stats.EOI{row_counter} = params.LEP.EOI{3};
+                        NLEP_table4stats.reference{row_counter} = params.LEP.ref{2};
                     end
-                    statement = sprintf('NLEP_table4stats.amplitude_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.amplitude(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.amplitude_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.amplitude(b, c);', params.LEP.peak{d});
                     eval(statement)
-                    statement = sprintf('NLEP_table4stats.latency_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.latency(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.latency_avg_raw(row_counter) = NLEP_measures(a).LEP_avg.%s.raw.latency(b, c);', params.LEP.peak{d});
                     eval(statement)
                     if d == 1
                         NLEP_table4stats.amplitude_avg_ICA(row_counter) = NLEP_measures(a).LEP_avg.N1.ICA_filtered.amplitude(b, c);
@@ -2596,9 +2655,9 @@ for a = 1:length(AP_info.single_subject)
                         NLEP_table4stats.amplitude_avg_ICA(row_counter) = NaN;
                         NLEP_table4stats.latency_avg_ICA(row_counter) = NaN;
                     end
-                    statement = sprintf('NLEP_table4stats.amplitude_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.amplitude(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.amplitude_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.amplitude(b, c);', params.LEP.peak{d});
                     eval(statement)
-                    statement = sprintf('NLEP_table4stats.latency_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.latency(b, c);', param.LEP.peak{d});
+                    statement = sprintf('NLEP_table4stats.latency_avg_CWT(row_counter) = NLEP_measures(a).LEP_avg.%s.CWT_filtered.latency(b, c);', params.LEP.peak{d});
                     eval(statement)
 
                     % single trial LEP measures
@@ -2666,21 +2725,21 @@ for a = 1:length(AP_info.single_subject)
         % time = block 1 / block 2
         for c = 1:2  
             % dataset 
-            for d = 1:length(param.dataset)
+            for d = 1:length(params.dataset)
                 % determine electrode and reference
                 if d == 1
                     if contains(NLEP_data.LEP(a).conditions{b}, 'right')
-                        eoi = param.EOI{1};
+                        eoi = params.EOI{1};
                     else
-                        eoi = param.EOI{2};
+                        eoi = params.EOI{2};
                     end
-                    ref = param.ref{1};
+                    ref = params.ref{1};
                 else
-                    eoi = param.EOI{3};
-                    ref = param.ref{2};
+                    eoi = params.EOI{3};
+                    ref = params.ref{2};
                 end
                 % processing
-                for e = 1:length(param.processing)
+                for e = 1:length(params.processing)
                     % subject info
                     NLEP_table4data.subject(row_counter) = a;
                     NLEP_table4data.ID{row_counter} = AP_info.single_subject(a).ID;
@@ -2691,12 +2750,12 @@ for a = 1:length(AP_info.single_subject)
                     NLEP_table4data.area{row_counter} = NLEP_data.LEP(a).conditions{b}(1:4);
                     NLEP_table4data.side{row_counter} = NLEP_data.LEP(a).conditions{b}(6:end);
                     NLEP_table4data.time(row_counter) = c;
-                    NLEP_table4data.dataset{row_counter} = param.dataset{d};
-                    NLEP_table4data.processing{row_counter} = param.processing{e};
+                    NLEP_table4data.dataset{row_counter} = params.dataset{d};
+                    NLEP_table4data.processing{row_counter} = params.processing{e};
 
                     % average sampled voltage
                     for f = 1:size(NLEP_data.LEP(a).unfiltered.N1.cond1, 2)
-                        statement = sprintf('NLEP_table4data.v%d(row_counter) = NLEP_data.LEP(a).%s.%s.average_block((b-1)*2 + c).mean(f);', f, param.processing{e}, param.dataset{d});   
+                        statement = sprintf('NLEP_table4data.v%d(row_counter) = NLEP_data.LEP(a).%s.%s.average_block((b-1)*2 + c).mean(f);', f, params.processing{e}, params.dataset{d});   
                         eval(statement)
                     end
 
@@ -2715,7 +2774,7 @@ save(output_file, 'NLEP_table4data', '-append');
 writetable(NLEP_table4data, 'NLEP_LEP_data.csv');
 
 % preapre a dataset with peak topoplots
-param.processing{1} = 'raw';
+params.processing{1} = 'raw';
 row_counter = height(NLEP_table4topo) + 1;
 fprintf('exporting average LEP peak topographies: ')
 for a = 1:length(AP_info.single_subject)
@@ -2741,21 +2800,21 @@ for a = 1:length(AP_info.single_subject)
         % time = block 1 / block 2
         for c = 1:2  
             % peak 
-            for d = 1:length(param.peak)
+            for d = 1:length(params.peak)
                 % determine electrode and reference
                 if d == 1
                     if contains(NLEP_data.LEP(a).conditions{b}, 'right')
-                        eoi = param.EOI{1};
+                        eoi = params.EOI{1};
                     else
-                        eoi = param.EOI{2};
+                        eoi = params.EOI{2};
                     end
-                    ref = param.ref{1};
+                    ref = params.ref{1};
                 else
-                    eoi = param.EOI{3};
-                    ref = param.ref{2};
+                    eoi = params.EOI{3};
+                    ref = params.ref{2};
                 end
                 % processing
-                for e = 1:length(param.processing)
+                for e = 1:length(params.processing)
                     % subject info
                     NLEP_table4topo.subject(row_counter) = a;
                     NLEP_table4topo.ID{row_counter} = AP_info.single_subject(a).ID;
@@ -2766,17 +2825,17 @@ for a = 1:length(AP_info.single_subject)
                     NLEP_table4topo.area{row_counter} = NLEP_data.LEP(a).conditions{b}(1:4);
                     NLEP_table4topo.side{row_counter} = NLEP_data.LEP(a).conditions{b}(6:end);
                     NLEP_table4topo.time(row_counter) = c;
-                    NLEP_table4topo.peak{row_counter} = param.peak{d};
-                    NLEP_table4topo.processing{row_counter} = param.processing{e};
-                    statement = sprintf('peak_latency = NLEP_measures(a).LEP_avg.%s.%s.latency((b-1)*2 + c);', param.peak{d}, param.processing{e});
+                    NLEP_table4topo.peak{row_counter} = params.peak{d};
+                    NLEP_table4topo.processing{row_counter} = params.processing{e};
+                    statement = sprintf('peak_latency = NLEP_measures(a).LEP_avg.%s.%s.latency((b-1)*2 + c);', params.peak{d}, params.processing{e});
                     eval(statement)
                     NLEP_table4topo.latency{row_counter} = peak_latency;
 
                     % load the data
                     if  d == 1
-                        file2load = dir(sprintf('%s\\%s_%s\\%s*LEP*%s b%d*', folder.input, study, NLEP_measures(a).ID, param.prefix_topo{1}, NLEP_data.LEP(a).conditions{b}, c));
+                        file2load = dir(sprintf('%s\\%s_%s\\%s*LEP*%s b%d*', folder.input, study, NLEP_measures(a).ID, params.prefix_topo{1}, NLEP_data.LEP(a).conditions{b}, c));
                     else
-                        file2load = dir(sprintf('%s\\%s_%s\\%s*LEP*%s b%d*', folder.input, study, NLEP_measures(a).ID, param.prefix_topo{2}, NLEP_data.LEP(a).conditions{b}, c));
+                        file2load = dir(sprintf('%s\\%s_%s\\%s*LEP*%s b%d*', folder.input, study, NLEP_measures(a).ID, params.prefix_topo{2}, NLEP_data.LEP(a).conditions{b}, c));
                     end
                     if length(file2load) == 2
                         load(sprintf('%s\\%s', file2load(1).folder, file2load(1).name), '-mat')
@@ -2813,21 +2872,21 @@ save(output_file, 'NLEP_table4topo', '-append');
 % export for R
 writetable(NLEP_table4topo, 'NLEP_LEP_topo.csv');
 
-clear param output_variables a b c d e f row_counter statement dataset_pain trials_b1 trial_pain ref eoi ...
+clear params output_variables a b c d e f row_counter statement dataset_pain trials_b1 trial_pain ref eoi ...
     header data peak_latency peak_sample peak_data labels file2load contrast
 
 %% 16) ERP group-average visualization
 % to fix, bugging!
 % ----- section input -----
-param.response = {'LEP' 'SEP'};
-param.contrast = {'hand_hand' 'foot_foot' 'hand_foot'};
-param.EOI = 'Cz';
-param.window.LEP = [-0.2, 0.6];
-param.window.SEP = [-0.1, 0.4];
-param.ylim.LEP = [-15 15];
-param.ylim.SEP = [-5 5];
-param.alpha = 0.2;
-param.peaks = {'N1' 'N2' 'P2'};
+params.response = {'LEP' 'SEP'};
+params.contrast = {'hand_hand' 'foot_foot' 'hand_foot'};
+params.EOI = 'Cz';
+params.window.LEP = [-0.2, 0.6];
+params.window.SEP = [-0.1, 0.4];
+params.ylim.LEP = [-15 15];
+params.ylim.SEP = [-5 5];
+params.alpha = 0.2;
+params.peaks = {'N1' 'N2' 'P2'};
 figure_counter = 1;
 % ------------------------- 
 
@@ -3025,8 +3084,8 @@ for a = 1:length(data_area)
     hold on
     
     % extract peak latencies
-    h_axis(1) = subplot(3, param.gfp.max_peaks, [1 : 2*param.gfp.max_peaks]);    
-    [data_area(a).gfp_peaks.latency, data_area(a).gfp_peaks.amplitude] = gfp_plot(x, data_area(a).GFP, 1, param.gfp.labeled, 'max_peaks', param.gfp.max_peaks);
+    h_axis(1) = subplot(3, params.gfp.max_peaks, [1 : 2*params.gfp.max_peaks]);    
+    [data_area(a).gfp_peaks.latency, data_area(a).gfp_peaks.amplitude] = gfp_plot(x, data_area(a).GFP, 1, params.gfp.labeled, 'max_peaks', params.gfp.max_peaks);
     title(sprintf('grand average GFP: %s', data_area(a).condition), 'fontsize', 16, 'fontweight', 'bold')
 
     % choose data for topoplots 
@@ -3039,7 +3098,7 @@ for a = 1:length(data_area)
     % add topoplots
     for k = 1:length(data_area(a).gfp_peaks.latency)
         % plot the topoplot
-        h_axis(1 + k) = subplot(3, param.gfp.max_peaks, 2*param.gfp.max_peaks + k);
+        h_axis(1 + k) = subplot(3, params.gfp.max_peaks, 2*params.gfp.max_peaks + k);
         topo_plot(dataset(1).header, data_topoplot, data_area(a).gfp_peaks.latency(k), [-3, 3])
     
         % shift down
@@ -3057,38 +3116,38 @@ for a = 1:length(data_area)
 end
 
 % identify EOI
-eoi = find(strcmp(AP_info.group_analysis.preliminary(4).params.labels, param.EOI));
+eoi = find(strcmp(AP_info.group_analysis.preliminary(4).params.labels, params.EOI));
 
 % plot average ERPs
-for a = 1:length(param.response)
+for a = 1:length(params.response)
     % determine axes properties    
-    switch param.response{a}
+    switch params.response{a}
         case 'LEP'
-            x_start = round((param.window.LEP(1) - dataset(1).header.xstart)/dataset(1).header.xstep);
-            x_end = round((param.window.LEP(2) - dataset(1).header.xstart)/dataset(1).header.xstep);
-            x = (param.window.LEP(1) + (0:x_end - x_start) * dataset(1).header.xstep)*1000;
-            y_limits = param.ylim.LEP;
+            x_start = round((params.window.LEP(1) - dataset(1).header.xstart)/dataset(1).header.xstep);
+            x_end = round((params.window.LEP(2) - dataset(1).header.xstart)/dataset(1).header.xstep);
+            x = (params.window.LEP(1) + (0:x_end - x_start) * dataset(1).header.xstep)*1000;
+            y_limits = params.ylim.LEP;
         case 'SEP'
-            x_start = round((param.window.SEP(1) - dataset(1).header.xstart)/dataset(1).header.xstep);
-            x_end = round((param.window.SEP(2) - dataset(1).header.xstart)/dataset(1).header.xstep);
-            x = (param.window.SEP(1) + (0:x_end - x_start) * dataset(1).header.xstep)*1000;
-            y_limits = param.ylim.SEP;
+            x_start = round((params.window.SEP(1) - dataset(1).header.xstart)/dataset(1).header.xstep);
+            x_end = round((params.window.SEP(2) - dataset(1).header.xstart)/dataset(1).header.xstep);
+            x = (params.window.SEP(1) + (0:x_end - x_start) * dataset(1).header.xstep)*1000;
+            y_limits = params.ylim.SEP;
     end   
 
     % loop through contrasts
-    for b = 1:length(param.contrast)
+    for b = 1:length(params.contrast)
         % get the data
         data = [];
-        switch param.contrast{b}
+        switch params.contrast{b}
             case 'hand_hand'
                 % define plotting parameters
                 conditions = {'right hand' 'left hand'};
                 colours = [0.9216    0.4157    0.5059; 0.3373    0.6196    0.0863];
 
                 % select the data
-                statement = sprintf('data(1,:,:,:) = data_contrast.%s.%s.right;', param.response{a}, param.contrast{b});
+                statement = sprintf('data(1,:,:,:) = data_contrast.%s.%s.right;', params.response{a}, params.contrast{b});
                 eval(statement)
-                statement = sprintf('data(2,:,:,:) = data_contrast.%s.%s.left;', param.response{a}, param.contrast{b});
+                statement = sprintf('data(2,:,:,:) = data_contrast.%s.%s.left;', params.response{a}, params.contrast{b});
                 eval(statement)
 
             case 'foot_foot'
@@ -3097,9 +3156,9 @@ for a = 1:length(param.response)
                 colours = [0.9216    0.4157    0.5059; 0.3373    0.6196    0.0863];
 
                 % select the data
-                statement = sprintf('data(1,:,:,:) = data_contrast.%s.%s.right;', param.response{a}, param.contrast{b});
+                statement = sprintf('data(1,:,:,:) = data_contrast.%s.%s.right;', params.response{a}, params.contrast{b});
                 eval(statement)
-                statement = sprintf('data(2,:,:,:) = data_contrast.%s.%s.left;', param.response{a}, param.contrast{b});
+                statement = sprintf('data(2,:,:,:) = data_contrast.%s.%s.left;', params.response{a}, params.contrast{b});
                 eval(statement)
 
             case 'hand_foot'
@@ -3108,9 +3167,9 @@ for a = 1:length(param.response)
                 colours = [0.8314    0.2824    0.2824; 0.1843    0.6627    0.8706];
 
                 % select the data
-                statement = sprintf('data(1,:,:,:) = data_contrast.%s.%s.hand;', param.response{a}, param.contrast{b});
+                statement = sprintf('data(1,:,:,:) = data_contrast.%s.%s.hand;', params.response{a}, params.contrast{b});
                 eval(statement)
-                statement = sprintf('data(2,:,:,:) = data_contrast.%s.%s.foot;', param.response{a}, param.contrast{b});
+                statement = sprintf('data(2,:,:,:) = data_contrast.%s.%s.foot;', params.response{a}, params.contrast{b});
                 eval(statement)
         end
         
@@ -3126,9 +3185,9 @@ for a = 1:length(param.response)
 
         % plot and save
         fig = figure('Position', [100, 100, 700, 550]);
-        plot_ERP(visual_data, visual_CI_upper, visual_CI_lower, x, 'ylim', y_limits, 'labels', conditions, 'colours', colours, 'alpha', param.alpha);
-        title(sprintf('grand average %s: %s vs. %s', param.response{a}, conditions{1}, conditions{2}), 'fontsize', 16, 'fontweight', 'bold')
-        saveas(fig, sprintf('%s\\figures\\%s %s.png', folder.output, param.response{a}, param.contrast{b}))
+        plot_ERP(visual_data, visual_CI_upper, visual_CI_lower, x, 'ylim', y_limits, 'labels', conditions, 'colours', colours, 'alpha', params.alpha);
+        title(sprintf('grand average %s: %s vs. %s', params.response{a}, conditions{1}, conditions{2}), 'fontsize', 16, 'fontweight', 'bold')
+        saveas(fig, sprintf('%s\\figures\\%s %s.png', folder.output, params.response{a}, params.contrast{b}))
     end
 end
 
@@ -3205,12 +3264,12 @@ for s = 1:length(AP_info.single_subject)
     end
 end
 save(output_file, 'values_contrast', '-append');
-param.N1_cond = {'raw' 'ICA_filtered'};
+params.N1_cond = {'raw' 'ICA_filtered'};
 
 % plot LEP peak values - bugging!
-for c = 1:length(param.contrast) 
+for c = 1:length(params.contrast) 
     % plotting parameters  
-    switch param.contrast{c}
+    switch params.contrast{c}
         case 'hand_hand'
             colours = [0.9216    0.4157    0.5059; 0.3373    0.6196    0.0863]; 
             labels = {'right hand' 'left hand'};
@@ -3224,100 +3283,100 @@ for c = 1:length(param.contrast)
             labels = {'hand' 'foot'};
             n_subjects = length(values_contrast.N2.hand_foot.hand.amplitude);
     end
-    statement = sprintf('LEP_stats.%s.n_subjects = n_subjects;', param.contrast{c});
+    statement = sprintf('LEP_stats.%s.n_subjects = n_subjects;', params.contrast{c});
     eval(statement)
     clear data_amplitude data_latency
 
-    for p = 1:length(param.peaks)
+    for p = 1:length(params.peaks)
         if p == 1
-            for n = 1:length(param.N1_cond)
+            for n = 1:length(params.N1_cond)
                 % select the data
-                statement = sprintf('data_amplitude(1,:) = values_contrast.%s.%s.%s.right.amplitude;', param.peaks{p}, param.N1_cond{n}, param.contrast{c});
+                statement = sprintf('data_amplitude(1,:) = values_contrast.%s.%s.%s.right.amplitude;', params.peaks{p}, params.N1_cond{n}, params.contrast{c});
                 eval(statement)
-                statement = sprintf('data_amplitude(2,:) = values_contrast.%s.%s.%s.right.amplitude;', param.peaks{p}, param.N1_cond{n}, param.contrast{c});
+                statement = sprintf('data_amplitude(2,:) = values_contrast.%s.%s.%s.right.amplitude;', params.peaks{p}, params.N1_cond{n}, params.contrast{c});
                 eval(statement)
-                statement = sprintf('data_latency(1,:) = values_contrast.%s.%s.%s.left.latency;', param.peaks{p}, param.N1_cond{n}, param.contrast{c});
+                statement = sprintf('data_latency(1,:) = values_contrast.%s.%s.%s.left.latency;', params.peaks{p}, params.N1_cond{n}, params.contrast{c});
                 eval(statement)
-                statement = sprintf('data_latency(2,:) = values_contrast.%s.%s.%s.left.latency;', param.peaks{p}, param.N1_cond{n}, param.contrast{c});
+                statement = sprintf('data_latency(2,:) = values_contrast.%s.%s.%s.left.latency;', params.peaks{p}, params.N1_cond{n}, params.contrast{c});
                 eval(statement)
 
                 % append mean values
                 for a = 1:2
                 % mean
-                statement = sprintf('LEP_stats.%s.%s.%s.amplitude.mean(a) = mean(data_amplitude(a,:));', param.contrast{c}, param.peaks{p}, param.N1_cond{n});
+                statement = sprintf('LEP_stats.%s.%s.%s.amplitude.mean(a) = mean(data_amplitude(a,:));', params.contrast{c}, params.peaks{p}, params.N1_cond{n});
                 eval(statement)
-                statement = sprintf('LEP_stats.%s.%s.%s.latency.mean(a) = mean(data_latency(a,:));', param.contrast{c}, param.peaks{p}, param.N1_cond{n});
+                statement = sprintf('LEP_stats.%s.%s.%s.latency.mean(a) = mean(data_latency(a,:));', params.contrast{c}, params.peaks{p}, params.N1_cond{n});
                 eval(statement)
 
                 % SD
-                statement = sprintf('LEP_stats.%s.%s.%s.amplitude.SD(a) = std(data_amplitude(a,:));', param.contrast{c}, param.peaks{p}, param.N1_cond{n});
+                statement = sprintf('LEP_stats.%s.%s.%s.amplitude.SD(a) = std(data_amplitude(a,:));', params.contrast{c}, params.peaks{p}, params.N1_cond{n});
                 eval(statement)
-                statement = sprintf('LEP_stats.%s.%s.%s.latency.SD(a) = std(data_latency(a,:));', param.contrast{c}, param.peaks{p}, param.N1_cond{n});
+                statement = sprintf('LEP_stats.%s.%s.%s.latency.SD(a) = std(data_latency(a,:));', params.contrast{c}, params.peaks{p}, params.N1_cond{n});
                 eval(statement)
 
                 % SEM
-                statement = sprintf('LEP_stats.%s.%s.%s.amplitude.SEM(a) = LEP_stats.%s.%s.%s.amplitude.SD(a) / sqrt(n_subjects);', param.contrast{c}, param.peaks{p}, param.N1_cond{n}, param.contrast{c}, param.peaks{p}, param.N1_cond{n});
+                statement = sprintf('LEP_stats.%s.%s.%s.amplitude.SEM(a) = LEP_stats.%s.%s.%s.amplitude.SD(a) / sqrt(n_subjects);', params.contrast{c}, params.peaks{p}, params.N1_cond{n}, params.contrast{c}, params.peaks{p}, params.N1_cond{n});
                 eval(statement)
-                statement = sprintf('LEP_stats.%s.%s.%s.latency.SEM(a) = LEP_stats.%s.%s.%s.latency.SD(a) / sqrt(n_subjects);', param.contrast{c}, param.peaks{p}, param.N1_cond{n}, param.contrast{c}, param.peaks{p}, param.N1_cond{n});
+                statement = sprintf('LEP_stats.%s.%s.%s.latency.SEM(a) = LEP_stats.%s.%s.%s.latency.SD(a) / sqrt(n_subjects);', params.contrast{c}, params.peaks{p}, params.N1_cond{n}, params.contrast{c}, params.peaks{p}, params.N1_cond{n});
                 eval(statement)
             end
             
                 % plot and save amplitude
                 fig = figure('Position', [100, 100, 700, 550]);
                 plot_box(data_amplitude', 'amplitude', colours, labels)
-                title(sprintf('%s average amplitude - %: %s vs. %s', param.peaks{p}, param.N1_cond{n}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
-                saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%s_%s_amplitude.png', folder.output, param.contrast{c}, param.peaks{p}, param.N1_cond{n}))
+                title(sprintf('%s average amplitude - %: %s vs. %s', params.peaks{p}, params.N1_cond{n}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
+                saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%s_%s_amplitude.png', folder.output, params.contrast{c}, params.peaks{p}, params.N1_cond{n}))
     
                 % plot and save latency
                 fig = figure('Position', [100, 100, 700, 550]);
                 plot_box(data_latency', 'latency', colours, labels)
-                title(sprintf('%s average latency - %s: %s vs. %s', param.peaks{p}, param.N1_cond{n}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
-                saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%_%s_latency.png', folder.output, param.contrast{c}, param.peaks{p}, param.N1_cond{n}))
+                title(sprintf('%s average latency - %s: %s vs. %s', params.peaks{p}, params.N1_cond{n}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
+                saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%_%s_latency.png', folder.output, params.contrast{c}, params.peaks{p}, params.N1_cond{n}))
             end
         else
             data_amplitude = []; data_latency = [];
             % select the data
-            statement = sprintf('data_amplitude(1,:) = values_contrast.%s.%s.right.amplitude;', param.peaks{p}, param.contrast{c});
+            statement = sprintf('data_amplitude(1,:) = values_contrast.%s.%s.right.amplitude;', params.peaks{p}, params.contrast{c});
             eval(statement)
-            statement = sprintf('data_amplitude(2,:) = values_contrast.%s.%s.right.amplitude;', param.peaks{p}, param.contrast{c});
+            statement = sprintf('data_amplitude(2,:) = values_contrast.%s.%s.right.amplitude;', params.peaks{p}, params.contrast{c});
             eval(statement)
-            statement = sprintf('data_latency(1,:) = values_contrast.%s.%s.left.latency;', param.peaks{p}, param.contrast{c});
+            statement = sprintf('data_latency(1,:) = values_contrast.%s.%s.left.latency;', params.peaks{p}, params.contrast{c});
             eval(statement)
-            statement = sprintf('data_latency(2,:) = values_contrast.%s.%s.left.latency;', param.peaks{p}, param.contrast{c});
+            statement = sprintf('data_latency(2,:) = values_contrast.%s.%s.left.latency;', params.peaks{p}, params.contrast{c});
             eval(statement)
 
             % append mean values
             for a = 1:2
                 % mean
-                statement = sprintf('LEP_stats.%s.%s.amplitude.mean(a) = mean(data_amplitude(a,:));', param.contrast{c}, param.peaks{p});
+                statement = sprintf('LEP_stats.%s.%s.amplitude.mean(a) = mean(data_amplitude(a,:));', params.contrast{c}, params.peaks{p});
                 eval(statement)
-                statement = sprintf('LEP_stats.%s.%s.latency.mean(a) = mean(data_latency(a,:));', param.contrast{c}, param.peaks{p});
+                statement = sprintf('LEP_stats.%s.%s.latency.mean(a) = mean(data_latency(a,:));', params.contrast{c}, params.peaks{p});
                 eval(statement)
 
                 % SD
-                statement = sprintf('LEP_stats.%s.%s.amplitude.SD(a) = std(data_amplitude(a,:));', param.contrast{c}, param.peaks{p});
+                statement = sprintf('LEP_stats.%s.%s.amplitude.SD(a) = std(data_amplitude(a,:));', params.contrast{c}, params.peaks{p});
                 eval(statement)
-                statement = sprintf('LEP_stats.%s.%s.latency.SD(a) = std(data_latency(a,:));', param.contrast{c}, param.peaks{p});
+                statement = sprintf('LEP_stats.%s.%s.latency.SD(a) = std(data_latency(a,:));', params.contrast{c}, params.peaks{p});
                 eval(statement)
 
                 % SEM
-                statement = sprintf('LEP_stats.%s.%s.amplitude.SEM(a) = LEP_stats.%s.%s.amplitude.SD(a) / sqrt(n_subjects);', param.contrast{c}, param.peaks{p}, param.contrast{c}, param.peaks{p});
+                statement = sprintf('LEP_stats.%s.%s.amplitude.SEM(a) = LEP_stats.%s.%s.amplitude.SD(a) / sqrt(n_subjects);', params.contrast{c}, params.peaks{p}, params.contrast{c}, params.peaks{p});
                 eval(statement)
-                statement = sprintf('LEP_stats.%s.%s.latency.SEM(a) = LEP_stats.%s.%s.latency.SD(a) / sqrt(n_subjects);', param.contrast{c}, param.peaks{p}, param.contrast{c}, param.peaks{p});
+                statement = sprintf('LEP_stats.%s.%s.latency.SEM(a) = LEP_stats.%s.%s.latency.SD(a) / sqrt(n_subjects);', params.contrast{c}, params.peaks{p}, params.contrast{c}, params.peaks{p});
                 eval(statement)
             end
 
             % plot and save amplitude
             fig = figure('Position', [100, 100, 700, 550]);
             plot_box(data_amplitude', 'amplitude', colours, labels)
-            title(sprintf('%s average amplitude: %s vs. %s', param.peaks{p}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
-            saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%s_amplitude.png', folder.output, param.contrast{c},  param.peaks{p}))
+            title(sprintf('%s average amplitude: %s vs. %s', params.peaks{p}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
+            saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%s_amplitude.png', folder.output, params.contrast{c},  params.peaks{p}))
 
             % plot and save latency
             fig = figure('Position', [100, 100, 700, 550]);
             plot_box(data_latency', 'latency', colours, labels)
-            title(sprintf('%s average latency: %s vs. %s', param.peaks{p}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
-            saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%_latency.png', folder.output, param.contrast{c}, param.peaks{p}))
+            title(sprintf('%s average latency: %s vs. %s', params.peaks{p}, labels{1}, labels{2}), 'fontsize', 16, 'fontweight', 'bold')
+            saveas(fig, sprintf('%s\\figures\\LEP_avg_unfiltered_%s_%_latency.png', folder.output, params.contrast{c}, params.peaks{p}))
         end                  
     end
 end
@@ -3335,7 +3394,7 @@ mean(LEP_stats.hand_hand.N2.amplitude.SD)
 mean(LEP_stats.hand_hand.N2.latency.mean)
 mean(LEP_stats.hand_hand.N2.latency.SD)
 
-clear param eoi x_start x_end x a b c t p conditios statement data visual_data visual_CI_upper visual_CI_lower...
+clear params eoi x_start x_end x a b c t p conditios statement data visual_data visual_CI_upper visual_CI_lower...
     visual_sem colours idx_contrast contrast condition n_subjects n labels fig data_amplitude data_latency s 
 
 %% final data check 
