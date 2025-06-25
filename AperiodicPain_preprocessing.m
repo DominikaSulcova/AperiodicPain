@@ -889,6 +889,7 @@ end
 AP_info(subject_idx).preprocessing(13).params.PSD = squeeze(mean(psd, [2, 3]));
 
 % plot IC spectral content (in 2 figures to keep the size readable)
+addpath(genpath([folder.toolbox '\letswave 6']));
 for a = 1:2
     figure('units','normalized','outerposition',[0 0 1 1]);
     hold on
@@ -912,7 +913,6 @@ end
 
 % remove artifactual ICs
 fprintf('please perform ICA manually in letswave 6.\n')
-addpath(genpath([folder.toolbox '\letswave 6']));
 letswave
 for f = 1:length(dataset.preprocessed)
     filenames{f} = sprintf('%s %s.mat', params.suffix{2}, dataset.filtered(f).header.name);
@@ -1044,21 +1044,22 @@ fprintf('section 5 finished.\n\n')
 %   - SEP N2 and P2 estimation
 %   - VEP N2 and P2 estimation
 % baseline correcton after final ICA for all conditions!
+% single-subject average plotting
+
+%% in the next script:
 % extraction of ERP amplitudes and latencies
 % single-trial prestim pre-processing at sensor level
 % single-trial source activity estimation --> processing at source level
 
 
-%% 6) LEPs: identify N2P2 component and subtract it for N1 analysis
+%% 6) LEPs: pre-process for single-trial analysis
 % ----- section input -----
 params.prefix = 'ERP icfilt ica_all ar dc ep reref notch bandpass dc ds crop';
 params.suffix = {'reref_AFz' 'ica_N1' 'icfilt' 'bl'};
 params.ref = 'AFz';
-params.EOI = {'C5' 'C6'};
-params.TOI = [0.1 0.22];
 params.baseline = [-0.25 0];
 % -------------------------
-fprintf('section 6: LEPs - subtract N2P2 for N1 analysis\n\n')
+fprintf('section 6: LEPs - pre-process for single-trial analysis\n\n')
 
 % re-load dataset if needed
 if exist('dataset') ~= 1
@@ -1093,7 +1094,7 @@ for d = 1:length(lwdataset)
 
     % re-reference
     option = struct('reference_list', {{params.ref}}, 'apply_list', {{params.chanlocs.labels}},...
-    'suffix', params.suffix{1}, 'is_save', 0);
+    'suffix', params.suffix{1}, 'is_save', 1);
     lwdata = FLW_rereference.get_lwdata(lwdata, option); 
 
     % update subset
@@ -1122,7 +1123,7 @@ end
 params.ICA_SR = 1/lwdataset(1).header.xstep;
 
 % encode
-AP_info(subject_idx).preprocessing(17).process = 'LEP: second ICA matrix computed';
+AP_info(subject_idx).preprocessing(17).process = 'LEPs: second ICA matrix computed';
 AP_info(subject_idx).preprocessing(17).params.method = 'runica';
 AP_info(subject_idx).preprocessing(17).params.components = AP_info(subject_idx).preprocessing(14).params.kept;
 AP_info(subject_idx).preprocessing(17).params.chanlocs = params.chanlocs;
@@ -1174,82 +1175,226 @@ figure('units','normalized','outerposition',[0 0 1 1]);
 hold on
 for f = 1:size(visual.data, 1)
     % plot the topography
-    subplot(ceil(size(visual.data, 1)/2), 4, (f-1)*2 + 1);
+    subplot(ceil(size(visual.data, 1)/2), 6, (f-1)*3 + 1);
     topoplot(double(matrix.mix(:, f)'), params.chanlocs, 'maplimits', [-3 3], 'shading', 'interp', 'whitebk', 'on', 'electrodes', 'off')
     set(gca,'color',[1 1 1]);
     title(params.ICA_labels{f})
 
-    % plot the timecourse 
-    subplot(ceil(size(visual.data, 1)/2), 4, (f-1)*2 + 2);
+    % plot average timecourse 
+    subplot(ceil(size(visual.data, 1)/2), 6, (f-1)*3 + 2);
+    plot(visual.x, squeeze(mean(visual.data(f, :, :), 2)), 'Color', 'black', 'LineWidth', 2)
+    xlim([-50 500])
+    xlabel('time (ms)');
+    ylabel('trial');
+
+    % plot timecourse per trial 
+    subplot(ceil(size(visual.data, 1)/2), 6, (f-1)*3 + 3);
     imagesc(visual.x, 1:size(visual.data, 2), squeeze(visual.data(f, :, :)));
     xlabel('time (ms)');
     ylabel('trial');
 end
 saveas(gcf, sprintf('%s\\figures\\ICA_N1_%s.png', folder.output, AP_info(subject_idx).ID));
 
-
-
-% remove artifactual ICs
-fprintf('please perform ICA manually in letswave 6.\n')
-addpath(genpath([folder.toolbox '\letswave 6']));
+% remove N2P2 IC(s)
+fprintf('please perform ICA manually in letswave.\n')
 letswave
-for f = 1:length(dataset.preprocessed)
-    filenames{f} = sprintf('%s %s.mat', params.suffix{2}, dataset.filtered(f).header.name);
+for f = 1:length(dataset.LEP_N1)
+    filenames{f} = sprintf('%s %s.mat', params.suffix{3}, dataset.LEP_N1(f).header.name);
 end
 wait4files(filenames);
 fprintf('\n')
 
-% load dataset with artifactual ICs removed
+% ask for the input
+prompt = {'N2P2 component(s):'};
+dlgtitle = 'N2P2 removed';  
+dims = [1 40];
+definput = {''};
+input = inputdlg(prompt,dlgtitle,dims,definput);
+clear prompt dlgtitle dims definput 
+
+% encode ICA 
+AP_info(subject_idx).preprocessing(18).process = 'LEPs: IC(s)s containing N2P2 component removed';
+AP_info(subject_idx).preprocessing(18).params.kept = AP_info(subject_idx).preprocessing(17).params.components - length(str2num(input{1}));
+AP_info(subject_idx).preprocessing(18).params.removed = str2num(input{1});
+AP_info(subject_idx).preprocessing(18).suffix = params.suffix{3};
+AP_info(subject_idx).preprocessing(18).date = sprintf('%s', date);
+
+% load filtered N1 dataset
 fprintf('updating dataset...\n')
-params.prefix = regexp(dataset.filtered(1).header.name, ['(.*)\s+' AP_info(subject_idx).ID], 'tokens');
+params.prefix = regexp(dataset.LEP_N1(1).header.name, ['(.*)\s+' AP_info(subject_idx).ID], 'tokens');
 params.prefix = params.prefix{1}{1};
 dataset_old = dataset;
-data2load = dir(sprintf('%s*%s*', params.suffix{2}, AP_info(subject_idx).ID));
-dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'filtered');
+data2load = dir(sprintf('%s %s*%s*', params.suffix{3}, params.prefix, AP_info(subject_idx).ID));
+dataset = reload_dataset(AP_info(subject_idx).ID, data2load, 'LEP_N1');
 dataset_new = dataset;
-[dataset_old.filtered] = dataset_new.filtered;
+[dataset_old.LEP_N1] = dataset_new.LEP_N1;
 dataset = dataset_old;
+fprintf('\n')
 clear data2load dataset_old dataset_new
 
-
-
-
-
-
-
-
-
-% identify outcome filenames and wait for them to appear
-for i = 1:length(filenames)
-    filenames_filtered{i} = sprintf('%s %s',params.suffix{3}, filenames{i});
-end
-wait4files(filenames_filtered);
-close(gcf)
-
-% baseline correct all LEP data
+% baseline correct both LEP datasets
+fprintf('orrecting for baseline...\n')
 addpath(genpath([folder.toolbox '\letswave 7']));
-for d = 1:length(filenames_filtered)
-    % raw data
-    option = struct('filename', sprintf('%slw6', filenames{d}(18:end-3)));
-    lwdata = FLW_load.get_lwdata(option);
+for d = 1:length(subset)
+    % N2P2 data
+    lwdata.data = subset(d).data;
+    lwdata.header = subset(d).header;
     option = struct('operation', 'substract', 'xstart', params.baseline(1), 'xend', params.baseline(2), ...
         'suffix', params.suffix{4},'is_save', 1);
     lwdata = FLW_baseline.get_lwdata(lwdata,option);
 
-    % raw re-referenced data
-    option = struct('filename', sprintf('%slw6', filenames{d}(8:end-3)));
-    lwdata = FLW_load.get_lwdata(option);
+    % update the dataset
+    dataset.LEP_N2P2(d).name = subset(d).name; 
+    dataset.LEP_N2P2(d).data = lwdata.data; 
+    dataset.LEP_N2P2(d).header = lwdata.header; 
+
+    % N1 data
+    lwdata.data = dataset.LEP_N1(d).data;
+    lwdata.header = dataset.LEP_N1(d).header;
     option = struct('operation', 'substract', 'xstart', params.baseline(1), 'xend', params.baseline(2), ...
         'suffix', params.suffix{4},'is_save', 1);
     lwdata = FLW_baseline.get_lwdata(lwdata,option);
 
-    % filtered data
-    option = struct('filename', sprintf('%slw6', filenames_filtered{d}(1:end-3)));
-    lwdata = FLW_load.get_lwdata(option);
-    option = struct('operation', 'substract', 'xstart', params.baseline(1), 'xend', params.baseline(2), ...
-        'suffix', params.suffix{4},'is_save', 1);
-    lwdata = FLW_baseline.get_lwdata(lwdata,option);
+    % update the dataset
+    dataset.LEP_N1(d).data = lwdata.data; 
+    dataset.LEP_N1(d).header = lwdata.header; 
 end
+AP_info(subject_idx).preprocessing(19).process = 'LEPs: N1 and N2P2 datasets baseline corrected';
+AP_info(subject_idx).preprocessing(19).params.method = 'subtraction';
+AP_info(subject_idx).preprocessing(19).params.baseline = params.baseline;
+AP_info(subject_idx).preprocessing(19).suffix = params.suffix{4};
+AP_info(subject_idx).preprocessing(19).date = sprintf('%s', date);
+fprintf('\n')
+
+% select EOIs for CWT
+fprintf('selecting EOIs...\n')
+for d = 1:length(dataset.LEP_N1)
+    % identify EOI
+    % split data per components
+end
+
+data.N1.cond1 = []; data.N2P2.cond1 = []; 
+data.N1.cond2 = []; data.N2P2.cond2 = []; 
+if length(file2process) == params.n_files
+    % prepare data
+    for f = 1:length(file2process)
+        % load the dataset
+        option = struct('filename', sprintf('%s\\%slw6', file2process(f).folder, file2process(f).name(1:end-3)));
+        lwdata = FLW_load.get_lwdata(option);
+
+        % bandpass filter 
+        option = struct('filter_type', 'bandpass', 'high_cutoff', params.bandpass(2), 'low_cutoff', params.bandpass(1),'filter_order', 4, 'suffix', params.suffix{1}, 'is_save', 0);
+        lwdata = FLW_butterworth_filter.get_lwdata(lwdata,option);
+
+        % split data according to conditions    
+        if contains(file2process(f).name, params.prefix{2})          % N1
+            % identify EOI
+            if contains(file2process(f).name, 'right')
+                eoi = find(strcmp({lwdata.header.chanlocs.labels}, params.EOI{1}));
+                eoi_all{f} = params.EOI{1};
+            else
+                eoi = find(strcmp({lwdata.header.chanlocs.labels}, params.EOI{2}));
+                eoi_all{f} = params.EOI{2};
+            end
+            
+            % subset the data and save to a datase                  
+            if contains(file2process(f).name, params.conditions{1})
+                for d = 1:lwdata.header.datasize(1)
+                    data.N1.cond1(end+1, :) = squeeze(lwdata.data(d, eoi, 1, 1, 1, :));
+                end
+            else
+                for d = 1:lwdata.header.datasize(1)
+                    data.N1.cond2(end+1, :) = squeeze(lwdata.data(d, eoi, 1, 1, 1, :));
+                end
+            end
+        else                                                        % N2 and P2
+            % identify EOI
+            eoi = find(strcmp({lwdata.header.chanlocs.labels}, params.EOI{3}));
+            eoi_all{f} = params.EOI{3};
+
+            % subset the data and save to a datase                  
+            if contains(file2process(f).name, params.conditions{1})
+                for d = 1:lwdata.header.datasize(1)
+                    data.N2P2.cond1(end+1, :) = squeeze(lwdata.data(d, eoi, 1, 1, 1, :));
+                end
+            else
+                for d = 1:lwdata.header.datasize(1)
+                    data.N2P2.cond2(end+1, :) = squeeze(lwdata.data(d, eoi, 1, 1, 1, :));
+                end
+            end
+        end
+    end
+else
+    fprintf('Incorrect number of datasets found in the directory: %d\n', length(file2process));
+    return;
+end
+
+% perform CWT filtering
+fprintf('filtering using CWT masking ...\n')
+addpath(genpath([folder.toolbox '\STEP']));
+params.freq = params.bandpass(1):1:params.bandpass(2);
+params.fs = 1/lwdata.header.xstep;
+params.timepoints = lwdata.header.xstart + (0:lwdata.header.datasize(6) + lwdata.header.xstart) * lwdata.header.xstep;
+fig1 = figure('Name', 'CWT filters', 'Position', [100, 100, 750, 550]);
+for p = 1:length(params.dataset)
+    for c = 1:length(params.conditions)
+        % define inputs
+        statement = sprintf('data_in = data.%s.cond%d(:, :);', params.dataset{p}, c);
+        eval(statement)
+        data_in = permute(data_in, [2,1]);         
+
+        % compute the mask
+        P_mask(p, c, :, :) = model_generation(data_in, params.freq, params.fs, params.timepoints', params.mask_threshold);
+        P_mask(p, c, :, 1:find(params.timepoints == 0)) = 0;
+
+        % filter using the mask
+        data_out = tf_filtering(data_in, params.freq, params.fs, squeeze(P_mask(p, c, :, :)));
+        statement = sprintf('data_filtered.%s.cond%d(:, :) = data_out'';', params.dataset{p}, c);
+        eval(statement)
+
+        % plot grand average filtered vs. unfiltered data
+        visual = struct;
+        t = tinv(0.975, size(data_in, 2) - 1); 
+        visual.data(1, :) = mean(data_in, 2)'; visual.data(2, :) = mean(data_out, 2)';
+        visual.sem(1, :) = visual.data(1, :) + std(data_in', 0, 1) / sqrt(size(data_in, 2)); 
+        visual.sem(2, :) = visual.data(2, :) + std(data_out', 0, 1) / sqrt(size(data_out, 2)); 
+        visual.CI_upper(1, :) = visual.data(1, :) + t * visual.sem(1, :); visual.CI_lower(1, :) = visual.data(1, :) - t * visual.sem(1, :); 
+        visual.CI_upper(2, :) = visual.data(2, :) + t * visual.sem(2, :); visual.CI_lower(2, :) = visual.data(2, :) - t * visual.sem(2, :); 
+        subplot(length(params.dataset), length(params.conditions), (p-1)*length(params.conditions) + c)
+        hold on
+        plot_ERP(visual.data, visual.CI_upper, visual.CI_lower, params.timepoints, 'labels', {'unfiltered' 'CWT filtered'}, ...
+            'colours', params.colours, 'alpha', params.alpha, 'shading', 'off', 'legend_loc', 'southwest');
+        title(sprintf('%s: %s', params.dataset{p}, params.conditions{c}), 'fontsize', 16, 'fontweight', 'bold')
+        if (p-1)*length(params.dataset) + c ~= length(params.dataset) * length(params.conditions)
+            legend('off');
+        end
+    end
+end
+AP_info.single_subject(subject_idx).LEP(2).process = '2 - target electrode selected and CWT filtered';
+AP_info.single_subject(subject_idx).LEP(2).params.EOIs = unique(eoi_all);
+AP_info.single_subject(subject_idx).LEP(2).params.P_mask = P_mask;
+AP_info.single_subject(subject_idx).LEP(2).date = sprintf('%s', date);
+
+% save the output figure
+saveas(fig1, sprintf('%s\\figures\\CWT_%s.png', folder.output, AP_info.single_subject(subject_idx).ID))
+
+% save info structure and move on
+save(output_file, 'AP_info', '-append');
+clear a b c d e f i data_idx filenames header input lwdata lwdataset matrix option subset visual
+fprintf('section 6 finished.\n\n')
+
+%% 
+
+
+
+
+params.EOI = {'C5' 'C6'};
+params.TOI = [0.1 0.22];
+
+
+
+
+
 
 % extract average N1 before and after filtering
 for d = 1:length(filenames_filtered)
