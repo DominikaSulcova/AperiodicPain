@@ -22,85 +22,6 @@
 %           --> 2 blocks of 30 stimuli
 % 
 % Processing steps:
-%   1) fill in subject & session information 
-%           --> allows user to manually encode information about 
-%               the subject, session, stimulation parameters...
-%           --> all this and following information is encoded in AP_info 
-%   2) import EEG data
-%           --> searches in the input directory to identify all datasets
-%           --> imports to MATLAB as variable 'dataset'
-%           --> encodes all datasets' names to the metadata structure 
-%   3) pre-processing block 1 
-%           --> assigns electrode coordinates
-%           --> removes DC + detrends the whole recording
-%           --> bandpass filters (Butterworth, 4th order) - default
-%               [0.1,80]Hz (modifiable)
-%           --> notch filters at 50Hz
-%           --> downsamples by a ratio - default 5 (modifiable)
-%           --> updates 'dataset'
-%           --> encodes processing steps to 'NLEP_info'
-%   4) visual check 1
-%           --> opens letswave - check for bad channels before
-%               re-referencing to common average
-%   5) pre-process LEPs and SEPs
-%           --> re-references to common average
-%           --> checks the number of events and re-labels them 'LEP'/'SEP'
-%           --> segments relative to the event - default [-300 1000]ms (modifiable)
-%           --> removes DC + detrends each epoch
-%           --> encodes processing steps to 'NLEP_info'
-%   6) pre-process RS-EEG 
-%           --> RS-EEG: 
-%                   - re-references to common average
-%                   - selects 1 min of clean recording
-%                   - chunks into non-overlapping epochs - default 1s
-%                   - removes DC + detrends each epoch
-%           --> pre-stimulus RS-EEG:
-%                   - re-references to common average
-%                   - selects 1s epochs from 'relaxed' pre-stimulus EEG -
-%                       default [-2 -1]s preceding 'get ready' trigger
-%                   - selects 1s epochs from 'ready' pre-stimulus EEG - 
-%                       default 1s before the stimulus  
-%                   - removes DC + detrends each epoch
-%   7) visual check 2 
-%           --> remove bad epochs in letswave
-%   8) encode deleted ERP epochs, discard associated RS-EEG epochs
-%   9) compute ICA - ERPs and RS-EEG together
-%           --> ICA is run manually in letswave - recommended parameters:
-%               merged all datasets, restrict to 25 ICs
-%           --> plots component topographies and spectral content
-%   10) encode info and finish pre-processing
-%           --> user input: interpolated channels, removed epochs, removed
-%           --> corrects to baseline - subtracts the average [-250 0]ms
-%           --> averages across trials (saves before and after)
-%   11) LEPs: identify N2P2 component and subtract it for N1 analysis
-%           --> re-references to chosen frontal electrode - default AFz
-%           --> second ICA is run manually in letswave - IC number
-%           restricted to components leftover after the first ICA
-%           --> plots component topographies and spectral content
-%           --> waits for user to select and remove N2P2 component
-%           --> extracta average N1 before and after filtering, plots
-%           --> encodes to the output structure 
-%   12) single-trial LEP analysis: time domain
-%           --> selects target electrodes based on LEP component
-%           --> performs CWT filtering - default mask threshold 0.85
-%           --> identifies and saves average peak measures (cleaned)
-%           --> prepares template data based on average
-%           --> computes regressors based on the template, plots them
-%           --> performs the regression on single trial data
-%           --> extracts single-trial peak measures
-%   13) average LEP analysis: time domain
-%           --> extracts peak measures from data averaged across all trials 
-%               for each subject, condition, and block 
-%   14) RS-EEG analysis: spectral decomposition, sensor space
-%           --> compute PSD for each trial and electrode, 
-%               extract aperiodic component parameters 
-%           --> compute PSD for averaged data at each electrode, 
-%               extract aperiodic component parameters 
-%           --> computes averages for target and control regions 
-%               (pre-stimulus data only)
-%   15) exports to R for statistics and visualization
-%           --> long-format .csv table
-%   16) ERP group-average visualization
 % 
 % Output:
 %   1) AP_info      --> structure containing all information about
@@ -1046,11 +967,11 @@ fprintf('section 5 finished.\n\n')
 % baseline correcton after final ICA for all conditions!
 % single-subject average plotting
 
-%% in the next script:
+%% in the next script AperiodicPain_analysis:
 % extraction of ERP amplitudes and latencies
-% single-trial prestim pre-processing at sensor level
-% single-trial source activity estimation --> processing at source level
-
+% single-trial prestim pre-processing at sensor level ==> aperiodic
+% exponent extraction
+% single-trial source activity estimation ==> processing at source level
 
 %% 6) LEPs: pre-process for single-trial analysis
 % ----- section input -----
